@@ -659,9 +659,13 @@ elif page == "Inventory List & Search":
                     except Exception as e:
                         st.warning(f"Unable to generate label PDF: {e}")
 
-                    # Request pick (Admin or Sales)
+                                       # Request pick (Admin or Sales)
                     if role in ["Admin", "Sales"]:
-                        if not row.get("sold") and row.get("request_status") != "pending":
+                        req_status = row.get("request_status")
+                        # Make sure "sold" behaves like a True/False
+                        sold_flag = bool(row.get("sold")) if row.get("sold") is not None else False
+
+                        if not sold_flag and req_status != "pending":
                             if st.button("Request Pick"):
                                 update_item(
                                     sel_id,
@@ -672,8 +676,20 @@ elif page == "Inventory List & Search":
                                 )
                                 st.success("Pick request created.")
                                 st.rerun()
-                        elif row.get("request_status") == "pending":
+
+                        elif req_status == "pending":
                             st.info("Pick already requested for this item.")
+
+                            # 🔹 Admin-only escape hatch to clear a stuck pick request
+                            if role == "Admin":
+                                if st.button("Clear Pick Request (Admin only)"):
+                                    update_item(
+                                        sel_id,
+                                        {"request_status": None, "requested_by": None},
+                                    )
+                                    st.success("Pick request cleared; item can be picked again.")
+                                    st.rerun()
+
 
             with mid:
                 st.subheader("Adjust / Delete")
