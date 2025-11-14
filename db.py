@@ -1,28 +1,36 @@
-# db.py - SQLAlchemy engine for Postgres (Streamlit Cloud friendly)
-import os
+# db.py - SQLAlchemy engine for Postgres (Streamlit Cloud friendly, no psycopg2)
+
 from sqlalchemy import create_engine, text
-from sqlalchemy.engine import Engine
+from sqlalchemy.engine import Engine, URL
+import streamlit as st
 
-try:
-    import streamlit as st
-    _secrets = st.secrets
-except Exception:
-    _secrets = {}
-
-DATABASE_URL = (
-    (_secrets.get("DATABASE_URL") if _secrets else None)
-    or os.environ.get("DATABASE_URL")
-)
-
-_engine = None
+_engine: Engine | None = None
 
 def get_engine() -> Engine:
     global _engine
     if _engine is None:
-        if not DATABASE_URL:
-            raise RuntimeError("DATABASE_URL is not set. Add it to Streamlit Secrets or env.")
+        secrets = st.secrets
+
+        # Read simple pieces from Streamlit Secrets
+        user = secrets.get("DB_USER", "postgres")
+        password = secrets["DB_PASSWORD"]          # required
+        host = secrets["DB_HOST"]                  # required
+        port = int(secrets.get("DB_PORT", 5432))
+        dbname = secrets.get("DB_NAME", "postgres")
+
+        # Build a proper URL for the psycopg v3 driver
+        url = URL.create(
+            "postgresql+psycopg",   # <-- this forces psycopg v3, NOT psycopg2
+            username=user,
+            password=password,
+            host=host,
+            port=port,
+            database=dbname,
+            query={"sslmode": "require"},
+        )
+
         _engine = create_engine(
-            DATABASE_URL,
+            url,
             pool_size=5,
             max_overflow=10,
             pool_pre_ping=True,
