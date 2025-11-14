@@ -938,8 +938,9 @@ elif page == "Perform Inventory Audit":
                 st.success("Audit session ended.")
 
 elif page == "Picker Queue":
-    if role not in ["Admin", "Picker"]:
-        st.error("Only Admin and Picker can access the Picker Queue.")
+    # Now Admin, Picker, and Sales can access this page
+    if role not in ["Admin", "Picker", "Sales"]:
+        st.error("Only Admin, Picker, and Sales can access the Picker Queue.")
     else:
         st.subheader("Picker Queue")
 
@@ -948,78 +949,117 @@ elif page == "Picker Queue":
             rows = conn.execute(
                 text(
                     """
-                SELECT *
-                FROM items
-                WHERE request_status = 'pending' AND (sold = FALSE OR sold IS NULL)
-                ORDER BY created_at
-                """
+                    SELECT *
+                    FROM items
+                    WHERE request_status = 'pending'
+                      AND (sold = FALSE OR sold IS NULL)
+                    ORDER BY created_at
+                    """
                 )
             ).mappings().all()
 
         if not rows:
             st.info("No pending pick requests.")
         else:
-            options = {
-                f"{r['make']} {r['model']} (PN: {r.get('part_number') or '-'}) - Bin {r.get('bin_location') or '-'} | Requested by: {r.get('requested_by') or '?'}": r
-                for r in rows
-            }
-            label = st.selectbox("Pick request", list(options.keys()))
-            item = options[label]
+            # ---- Summary at top ----
+            total_waiting = len(rows)
+            st.metric("Parts waiting to be picked", total_waiting)
 
-            st.markdown("### Item details")
-            st.write(f"Requested by: **{item.get('requested_by') or '-'}**")
-            st.write(f"Make / Model: {item['make']} {item['model']}")
-            st.write(f"PN: {item.get('part_number') or '-'}")
-            st.write(f"SN: {item.get('serial_number') or '-'}")
-            st.write(f"Bin: {item.get('bin_location') or '-'}")
-            st.write(f"Notes: {item.get('notes') or '-'}")
+            # Build a summary table for all pending picks
+            summary_data = []
+            for r in rows:
+                summary_data.append(
+                    {
+                        "ID": r["id"],
+                        "Make": r["make"],
+                        "Model": r["model"],
+                        "PN": r.get("part_number") or "",
+                        "SN": r.get("serial_number") or "",
+                        "Bin": r.get("bin_location") or "",
+                        "Qty": r.get("quantity") or 0,
+                        "Requested By": r.get("requested_by") or "",
+                        "Requested At": r.get("created_at") or "",
+                    }
+                )
 
-            scan_code = st.text_input(
-                "Scan barcode to confirm item", key=f"scan_{item['id']}"
-            )
+            summary_df = pd.DataFrame(summary_data)
+            st.markdown("### All pending pick requests")
+            st.dataframe(summary_df, use_container_width=True)
 
-            if scan_code:
-                if scan_code.strip() == item["code_value"]:
-                    st.success("Barcode matches. You have the correct item.")
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        if st.button("Mark as Sold"):
-                            with eng.begin() as conn:
-                                conn.execute(
-                                    text(
-                                        """
-                                    UPDATE items
-                                    SET sold = TRUE,
-                                        request_status = 'fulfilled'
-                                    WHERE id = :id
-                                    """
-                                    ),
-                                    {"id": item["id"]},
+            st.markdown("---")
+
+            # For Sales: read-only view of queue
+            if role == "Sales":
+                st.info(
+                    "Sales has a read-only view of the picker queue. "
+                    "Pickers (or Admin) handle scanning and marking items as sold."
+                )
+            else:
+                # Admin / Picker can act on individual requests
+                options = {
+                    f"{r['make']} {r['model']} (PN: {r.get('part_number') or '-'}) "
+                    f"- Bin {r.get('bin_location') or '-'} | Requested by: {r.get('requested_by') or '?'}": r
+                    for r in rows
+                }
+                label = st.selectbox("Pick request to process", list(options.keys()))
+                item = options[label]
+
+                st.markdown("### Item details")
+                st.write(f"Requested by: **{item.get('requested_by') or '-'}**")
+                st.write(f"Make / Model: {item['make']} {item['model']}")
+                st.write(f"PN: {item.get('part_number') or '-'}")
+                st.write(f"SN: {item.get('serial_number') or '-'}")
+                st.write(f"Bin: {item.get('bin_location') or '-'}")
+                st.write(f"Notes: {item.get('notes') or '-'}")
+
+                scan_code = st.text_input(
+                    "Scan barcode to confirm item", key=f"scan_{item['id']}"
+                )
+
+                if scan_code:
+                    if scan_code.strip() == item["code_value"]:
+                        st.success("Barcode matches. You have the correct item.")
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            if st.button("Mark as Sold"):
+                                with eng.begin() as conn2:
+                                    conn2.execute(
+                                        text(
+                                            """
+                                            UPDATE items
+                                            SET sold = TRUE,
+                                                request_status = 'fulfilled'
+                                            WHERE id = :id
+                                            """
+                                        ),
+                                        {"id": item["id"]},
+                                    )
+                                refresh_data()
+                                st.success(
+                                    "Item marked as sold and removed from active inventory."
                                 )
-                            refresh_data()
-                            st.success(
-                                "Item marked as sold and removed from active inventory."
-                            )
-                            st.rerun()
-                    with col2:
-                        if st.button("Cancel Request / Return to stock"):
-                            with eng.begin() as conn:
-                                conn.execute(
-                                    text(
-                                        """
-                                    UPDATE items
-                                    SET request_status = NULL,
-                                        requested_by = NULL
-                                    WHERE id = :id
-                                    """
-                                    ),
-                                    {"id": item["id"]},
+                                st.rerun()
+                        with col2:
+                            if st.button("Cancel Request / Return to stock"):
+                                with eng.begin() as conn2:
+                                    conn2.execute(
+                                        text(
+                                            """
+                                            UPDATE items
+                                            SET request_status = NULL,
+                                                requested_by = NULL
+                                            WHERE id = :id
+                                            """
+                                        ),
+                                        {"id": item["id"]},
+                                    )
+                                refresh_data()
+                                st.info(
+                                    "Request canceled. Item remains in inventory."
                                 )
-                            refresh_data()
-                            st.info("Request canceled. Item remains in inventory.")
-                            st.rerun()
-                else:
-                    st.error("Scanned code does not match this item.")
+                                st.rerun()
+                    else:
+                        st.error("Scanned code does not match this item.")
 
 elif page == "Sold Archive":
     if role != "Admin":
