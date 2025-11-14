@@ -69,7 +69,7 @@ def require_login():
             if st.button("Log out"):
                 st.session_state["role"] = None
                 st.session_state["user_name"] = None
-                st.experimental_rerun()
+                st.rerun()
         return
 
     # Login form
@@ -92,7 +92,7 @@ def require_login():
         else:
             st.session_state["role"] = role
             st.session_state["user_name"] = name.strip() or role
-            st.experimental_rerun()
+            st.rerun()
 
     st.stop()  # Don't render rest of app until logged in
 
@@ -658,7 +658,7 @@ elif page == "Inventory List & Search":
                                     },
                                 )
                                 st.success("Pick request created.")
-                                st.experimental_rerun()
+                                st.rerun()
                         elif row.get("request_status") == "pending":
                             st.info("Pick already requested for this item.")
 
@@ -688,7 +688,7 @@ elif page == "Inventory List & Search":
                                 if st.button("Yes, delete"):
                                     delete_item(sel2)
                                     st.success("Item deleted.")
-                                    st.experimental_rerun()
+                                    st.rerun()
                             with colB:
                                 st.write("")
                     else:
@@ -971,7 +971,7 @@ elif page == "Picker Queue":
                             st.success(
                                 "Item marked as sold and removed from active inventory."
                             )
-                            st.experimental_rerun()
+                            st.rerun()
                     with col2:
                         if st.button("Cancel Request / Return to stock"):
                             with eng.begin() as conn:
@@ -988,7 +988,7 @@ elif page == "Picker Queue":
                                 )
                             refresh_data()
                             st.info("Request canceled. Item remains in inventory.")
-                            st.experimental_rerun()
+                            st.rerun()
                 else:
                     st.error("Scanned code does not match this item.")
 
@@ -1046,7 +1046,7 @@ elif page == "Sold Archive":
                     )
                 refresh_data()
                 st.success("Item returned to stock.")
-                st.experimental_rerun()
+                st.rerun()
 
 elif page == "Export/Import":
     if role != "Admin":
