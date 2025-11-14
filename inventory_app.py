@@ -17,7 +17,6 @@ from barcode import Code128
 from barcode.writer import ImageWriter
 import qrcode
 
-from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 from reportlab.lib.units import inch
 from reportlab.lib.utils import ImageReader
@@ -33,12 +32,78 @@ if os.path.exists(LOGO_FILE):
 
 st.title("📦 Warehouse Inventory (Cloud)")
 
+# ----------------------------
+# Database init
+# ----------------------------
 try:
     init_db()
 except Exception as e:
     st.error(f"Database initialization failed: {e}")
     st.stop()
 
+
+# ----------------------------
+# Auth / Roles
+# ----------------------------
+def require_login():
+    """Simple in-app role login based on Streamlit secrets."""
+    if "role" not in st.session_state:
+        st.session_state["role"] = None
+    if "user_name" not in st.session_state:
+        st.session_state["user_name"] = None
+
+    roles_conf = st.secrets.get("roles", None)
+
+    # If no roles configured, default to Admin with full access
+    if roles_conf is None:
+        if st.session_state["role"] is None:
+            st.info("Roles are not configured in secrets. Running as Admin with full access.")
+            st.session_state["role"] = "Admin"
+            st.session_state["user_name"] = "Admin"
+        return
+
+    # Already logged in
+    if st.session_state["role"] is not None:
+        with st.sidebar:
+            st.write(f"Logged in as: **{st.session_state['user_name']}** ({st.session_state['role']})")
+            if st.button("Log out"):
+                st.session_state["role"] = None
+                st.session_state["user_name"] = None
+                st.experimental_rerun()
+        return
+
+    # Login form
+    st.subheader("User Login")
+    name = st.text_input("Your name")
+    role = st.selectbox("Role", ["Admin", "Sales", "Picker"])
+    password = st.text_input("Role password", type="password")
+
+    if st.button("Login"):
+        ok = False
+        if role == "Admin" and password == roles_conf.get("admin_password", ""):
+            ok = True
+        elif role == "Sales" and password == roles_conf.get("sales_password", ""):
+            ok = True
+        elif role == "Picker" and password == roles_conf.get("picker_password", ""):
+            ok = True
+
+        if not ok:
+            st.error("Invalid role or password.")
+        else:
+            st.session_state["role"] = role
+            st.session_state["user_name"] = name.strip() or role
+            st.experimental_rerun()
+
+    st.stop()  # Don't render rest of app until logged in
+
+
+require_login()
+role = st.session_state.get("role", "Admin")
+user_name = st.session_state.get("user_name", "Admin")
+
+# ----------------------------
+# Data loading / helpers
+# ----------------------------
 @st.cache_data(show_spinner=False)
 def load_df():
     eng = get_engine()
@@ -46,8 +111,18 @@ def load_df():
         df = pd.read_sql("SELECT * FROM items ORDER BY created_at DESC", conn)
     return df
 
+
 def refresh_data():
     load_df.clear()
+
+
+def get_active_df():
+    """Return only items not marked sold (for active inventory views)."""
+    df = load_df()
+    if "sold" in df.columns:
+        return df[~df["sold"].fillna(False)]
+    return df
+
 
 def insert_item(payload: dict):
     eng = get_engine()
@@ -58,8 +133,9 @@ def insert_item(payload: dict):
         conn.execute(text(sql), payload)
     refresh_data()
 
+
 def update_item(item_id: str, updates: dict):
-    if not updates: 
+    if not updates:
         return
     eng = get_engine()
     sets = ", ".join([f"{k}=:{k}" for k in updates.keys()])
@@ -69,8 +145,10 @@ def update_item(item_id: str, updates: dict):
         conn.execute(text(sql), updates)
     refresh_data()
 
+
 def update_quantity(item_id: str, new_qty: int):
     update_item(item_id, {"quantity": int(new_qty)})
+
 
 def delete_item(item_id: str):
     eng = get_engine()
@@ -78,10 +156,12 @@ def delete_item(item_id: str):
         conn.execute(text("DELETE FROM items WHERE id=:id"), {"id": item_id})
     refresh_data()
 
+
 def generate_barcode_image_bytes(code_value: str) -> bytes:
     buf = io.BytesIO()
     Code128(code_value, writer=ImageWriter()).write(buf, options={"write_text": False})
     return buf.getvalue()
+
 
 def generate_qr_image_bytes(code_value: str) -> bytes:
     qr = qrcode.QRCode(box_size=8, border=2)
@@ -92,81 +172,85 @@ def generate_qr_image_bytes(code_value: str) -> bytes:
     img.save(out, format="PNG")
     return out.getvalue()
 
-def draw_label(c, x, y, w, h, row):
-    padding = 6
-    text_left = x + padding
-    text_top = y + h - padding
 
-    c.setFont("Helvetica-Bold", 9)
-    title = f"{(row.get('make') or '').upper()} {(row.get('model') or '')}"
-    c.drawString(text_left, text_top - 12, title[:40])
+def create_single_label_pdf(item: dict) -> bytes:
+    """
+    Create a 4" x 2 5/16" label PDF for a single item.
+    Designed for Dymo-style address labels.
+    """
+    label_width = 4 * inch
+    label_height = (2 + 5/16) * inch  # 2.3125"
 
-    c.setFont("Helvetica", 8)
-    pn = row.get('part_number') or ""
-    c.drawString(text_left, text_top - 24, f"PN: {pn}")
-    serial = row.get("serial_number") or ""
-    if serial:
-        c.drawString(text_left, text_top - 36, f"SN: {serial}")
-    binloc = row.get("bin_location") or ""
-    if binloc:
-        c.drawString(text_left, text_top - 48, f"BIN: {binloc}")
-    c.drawString(text_left, text_top - 60, f"Qty: {row.get('quantity', 1)}")
+    buffer = io.BytesIO()
+    c = canvas.Canvas(buffer, pagesize=(label_width, label_height))
 
-    code_value = row.get("code_value", "")
-    code_type = row.get("code_type", "Barcode (Code128)")
+    margin_x = 0.2 * inch
+    margin_y = 0.2 * inch
+
+    x = margin_x
+    y = label_height - margin_y
+
+    make = (item.get("make") or "").strip()
+    model = (item.get("model") or "").strip()
+    part_number = item.get("part_number") or ""
+    serial_number = item.get("serial_number") or ""
+    bin_location = item.get("bin_location") or ""
+    quantity = item.get("quantity", 1)
+
+    lines = [
+        f"{make} {model}".strip(),
+        f"PN: {part_number or '-'}",
+        f"SN: {serial_number or '-'}",
+        f"Bin: {bin_location or '-'}",
+        f"Qty: {quantity}",
+    ]
+
+    for line in lines:
+        c.setFont("Helvetica-Bold", 10)
+        c.drawString(x, y, line[:40])
+        y -= 0.24 * inch
+
+    # Draw barcode or QR on the right side
+    code_value = item.get("code_value", "")
+    code_type = item.get("code_type", "Barcode (Code128)")
     try:
         if code_type == "Barcode (Code128)":
             img_bytes = generate_barcode_image_bytes(code_value)
         else:
             img_bytes = generate_qr_image_bytes(code_value)
+
         img = Image.open(io.BytesIO(img_bytes))
         img_w, img_h = img.size
-        code_box_w = w * 0.48
-        code_box_h = h * 0.70
+
+        code_box_w = label_width * 0.45
+        code_box_h = label_height * 0.7
         scale = min(code_box_w / img_w, code_box_h / img_h)
         disp_w = img_w * scale
         disp_h = img_h * scale
-        code_x = x + w - disp_w - 6
-        code_y = y + (h - disp_h) / 2
-        c.drawImage(ImageReader(img), code_x, code_y, width=disp_w, height=disp_h, preserveAspectRatio=True, mask='auto')
+
+        code_x = label_width - disp_w - margin_x
+        code_y = (label_height - disp_h) / 2
+        c.drawImage(
+            ImageReader(img),
+            code_x,
+            code_y,
+            width=disp_w,
+            height=disp_h,
+            preserveAspectRatio=True,
+            mask="auto",
+        )
     except Exception:
         pass
 
+    # Small ID text
     c.setFont("Helvetica", 7)
-    c.drawString(text_left, y + 4, f"ID: {code_value}")
+    c.drawString(margin_x, margin_y, f"ID: {code_value}")
 
-def labels_pdf_bytes(df: pd.DataFrame, labels_per_item: int = 1,
-                     page_size=letter, cols=3, rows=10,
-                     left_margin=0.1875*inch, top_margin=0.5*inch,
-                     label_w=2.625*inch, label_h=1.0*inch,
-                     h_spacing=0.125*inch, v_spacing=0.0*inch) -> bytes:
-    out = io.BytesIO()
-    c = canvas.Canvas(out, pagesize=page_size)
-
-    col_positions = [left_margin + i*(label_w + h_spacing) for i in range(cols)]
-    row_positions = [page_size[1] - top_margin - label_h - i*(label_h + v_spacing) for i in range(rows)]
-
-    labels = []
-    for _, row in df.iterrows():
-        for _ in range(labels_per_item):
-            labels.append(row)
-
-    idx = 0
-    for row in labels:
-        col_idx = (idx % (cols*rows)) % cols
-        row_idx = (idx % (cols*rows)) // cols
-        x = col_positions[col_idx]
-        y = row_positions[row_idx]
-        draw_label(c, x, y, label_w, label_h, row)
-        idx += 1
-        if idx % (cols*rows) == 0:
-            c.showPage()
-
-    if idx % (cols*rows) != 0:
-        c.showPage()
+    c.showPage()
     c.save()
-    out.seek(0)
-    return out.read()
+    buffer.seek(0)
+    return buffer.read()
+
 
 def save_photo_and_get_url(file):
     if file is None:
@@ -186,381 +270,855 @@ def save_photo_and_get_url(file):
     except Exception:
         return None
 
+
+# ----------------------------
+# Sidebar navigation
+# ----------------------------
 with st.sidebar:
     st.header("Navigation")
-    page = st.radio("Go to", ["Receive Inventory", "Inventory List & Search", "Print Labels", "Scan to Pick", "Perform Inventory Audit", "Export/Import"])
+    page = st.radio(
+        "Go to",
+        [
+            "Receive Inventory",
+            "Inventory List & Search",
+            "Scan to Pick",
+            "Perform Inventory Audit",
+            "Picker Queue",
+            "Sold Archive",
+            "Export/Import",
+        ],
+    )
     st.caption("Streamlit Cloud + Postgres. Set secrets in the deployment settings.")
 
+
+# ----------------------------
+# Pages
+# ----------------------------
 if page == "Receive Inventory":
-    st.subheader("Receive Inventory")
-    with st.form("receive_form", clear_on_submit=True):
-        cols = st.columns(2)
-        with cols[0]:
-            make = st.text_input("Make *")
-            model = st.text_input("Model *")
-            part_number = st.text_input("Part Number (optional)")
-            serial_number = st.text_input("Serial Number (optional)")
-            quantity = st.number_input("Quantity", min_value=1, step=1, value=1)
-            bin_location = st.text_input("Bin Location *", placeholder="e.g., Aisle 1 / Bin B3")
-        with cols[1]:
-            code_type = st.selectbox("Code Type", ["Barcode (Code128)", "QR Code"], index=0)
-            photo = st.file_uploader("Photo (JPG/PNG)", type=["jpg","jpeg","png"])
-            notes = st.text_area("Notes (optional)")
+    if role != "Admin":
+        st.error("Only Admin can receive inventory.")
+    else:
+        st.subheader("Receive Inventory")
+        with st.form("receive_form", clear_on_submit=True):
+            cols = st.columns(2)
 
-        submitted = st.form_submit_button("Add to Inventory")
-        if submitted:
-            if not make or not model or not bin_location:
-                st.error("Make, Model, and Bin Location are required.")
-            else:
-                item_id = str(uuid.uuid4())[:12]
-                photo_url = save_photo_and_get_url(photo)
-                payload = {
-                    "id": item_id,
-                    "make": make.strip(),
-                    "model": model.strip(),
-                    "part_number": (part_number.strip() or None),
-                    "serial_number": (serial_number.strip() or None),
-                    "quantity": int(quantity),
-                    "photo_url": photo_url,
-                    "code_type": code_type,
-                    "code_value": item_id,
-                    "bin_location": bin_location.strip(),
-                    "notes": (notes.strip() or None),
-                    "created_at": datetime.utcnow().isoformat(timespec="seconds")
-                }
-                insert_item(payload)
-                st.success(f"Item added with ID: {item_id}")
-                try:
-                    img_bytes = generate_barcode_image_bytes(item_id) if code_type == "Barcode (Code128)" else generate_qr_image_bytes(item_id)
-                    st.image(img_bytes, caption=f"{code_type} for {item_id}", width=260)
-                except Exception:
-                    pass
+            with cols[0]:
+                make = st.text_input("Make *")
+                model = st.text_input("Model *")
+                part_number = st.text_input("Part Number (optional)")
+                serial_number = st.text_input("Serial Number (optional)")
+                quantity = st.number_input("Quantity", min_value=1, step=1, value=1)
+                bin_location = st.text_input(
+                    "Bin Location *", placeholder="e.g., Aisle 1 / Bin B3"
+                )
 
-elif page == "Inventory List & Search":
-    st.subheader("Inventory")
-    df = load_df()
-    filt_cols = st.columns(4)
-    with filt_cols[0]:
-        q = st.text_input("Search (Make/Model/PN/SN/ID/BIN/Notes)")
-    with filt_cols[1]:
-        make_f = st.text_input("Filter Make")
-    with filt_cols[2]:
-        model_f = st.text_input("Filter Model")
-    with filt_cols[3]:
-        part_f = st.text_input("Filter Part Number")
+                category = st.selectbox(
+                    "Category *",
+                    [
+                        "Crankshafts",
+                        "Camshafts",
+                        "Connecting Rods",
+                        "Rocker Arms",
+                        "Lifters",
+                        "Gears",
+                        "Counterweights",
+                    ],
+                    index=None,
+                    placeholder="Select a category",
+                )
 
-    if not df.empty:
-        fdf = df.copy()
-        if q:
-            ql = q.lower()
-            fdf = fdf[fdf.apply(lambda r: any(ql in str(r[c]).lower() for c in ["make","model","part_number","serial_number","id","bin_location","notes"]), axis=1)]
-        if make_f:
-            fdf = fdf[fdf["make"].str.contains(make_f, case=False, na=False)]
-        if model_f:
-            fdf = fdf[fdf["model"].str.contains(model_f, case=False, na=False)]
-        if part_f:
-            fdf = fdf[fdf["part_number"].str.contains(part_f, case=False, na=False)]
+            with cols[1]:
+                code_type = st.selectbox(
+                    "Code Type", ["Barcode (Code128)", "QR Code"], index=0
+                )
+                photo = st.file_uploader("Photo (JPG/PNG)", type=["jpg", "jpeg", "png"])
+                notes = st.text_area("Notes (optional)")
 
-        from streamlit import column_config
-        show_cols = ["id","make","model","part_number","serial_number","bin_location","quantity","created_at","photo_url"]
-        rename = {"photo_url":"Photo"}
-        img_col = column_config.ImageColumn("Photo", width="small")
-        st.dataframe(fdf[show_cols].rename(columns=rename), use_container_width=True, column_config={"Photo": img_col})
+                pcol1, pcol2, pcol3 = st.columns(3)
+                with pcol1:
+                    purchase_price = st.number_input(
+                        "Purchase Price",
+                        min_value=0.0,
+                        step=0.01,
+                        format="%.2f",
+                        value=0.0,
+                    )
+                with pcol2:
+                    repair_cost = st.number_input(
+                        "Repair Cost",
+                        min_value=0.0,
+                        step=0.01,
+                        format="%.2f",
+                        value=0.0,
+                    )
+                with pcol3:
+                    sale_price = st.number_input(
+                        "Sale Price",
+                        min_value=0.0,
+                        step=0.01,
+                        format="%.2f",
+                        value=0.0,
+                    )
 
-        st.markdown("---")
-        left, mid, right = st.columns([2,2,2])
-        with left:
-            st.subheader("Preview / Edit")
-            ids = fdf["id"].tolist()
-            if ids:
-                sel_id = st.selectbox("Select Item ID", ids)
-                row = fdf[fdf["id"]==sel_id].iloc[0].to_dict()
-                if row.get("photo_url"):
+            submitted = st.form_submit_button("Add to Inventory")
+            if submitted:
+                if not make or not model or not bin_location or category is None:
+                    st.error("Make, Model, Bin Location, and Category are required.")
+                else:
+                    item_id = str(uuid.uuid4())[:12]
+                    photo_url = save_photo_and_get_url(photo)
+                    payload = {
+                        "id": item_id,
+                        "make": make.strip(),
+                        "model": model.strip(),
+                        "part_number": (part_number.strip() or None),
+                        "serial_number": (serial_number.strip() or None),
+                        "quantity": int(quantity),
+                        "photo_url": photo_url,
+                        "code_type": code_type,
+                        "code_value": item_id,
+                        "bin_location": bin_location.strip(),
+                        "notes": (notes.strip() or None),
+                        "category": category,
+                        "purchase_price": purchase_price if purchase_price > 0 else None,
+                        "repair_cost": repair_cost if repair_cost > 0 else None,
+                        "sale_price": sale_price if sale_price > 0 else None,
+                        "sold": False,
+                        "requested_by": None,
+                        "request_status": None,
+                        "created_at": datetime.utcnow().isoformat(timespec="seconds"),
+                    }
+                    insert_item(payload)
+                    st.success(f"Item added with ID: {item_id}")
+
+                    # Label download
                     try:
-                        st.image(row["photo_url"], caption="Photo", use_column_width=True)
+                        label_pdf = create_single_label_pdf(payload)
+                        st.download_button(
+                            label="Print Label",
+                            data=label_pdf,
+                            file_name=f"label_{item_id}.pdf",
+                            mime="application/pdf",
+                            key=f"recv_label_{item_id}",
+                        )
+                    except Exception as e:
+                        st.warning(f"Unable to generate label PDF: {e}")
+
+                    # Show barcode / QR
+                    try:
+                        img_bytes = (
+                            generate_barcode_image_bytes(item_id)
+                            if code_type == "Barcode (Code128)"
+                            else generate_qr_image_bytes(item_id)
+                        )
+                        st.image(
+                            img_bytes,
+                            caption=f"{code_type} for {item_id}",
+                            width=260,
+                        )
                     except Exception:
                         pass
-                with st.form("edit_item"):
-                    new_make = st.text_input("Make", row["make"] or "")
-                    new_model = st.text_input("Model", row["model"] or "")
-                    new_pn = st.text_input("Part Number (optional)", row.get("part_number") or "")
-                    new_sn = st.text_input("Serial Number (optional)", row.get("serial_number") or "")
-                    new_bin = st.text_input("Bin Location *", row.get("bin_location") or "")
-                    new_qty = st.number_input("Quantity", min_value=0, value=int(row.get("quantity",1)))
-                    new_notes = st.text_area("Notes", row.get("notes") or "")
-                    saved = st.form_submit_button("Save changes")
-                if saved:
-                    if not new_make or not new_model or not new_bin:
-                        st.error("Make, Model, and Bin Location are required.")
+
+elif page == "Inventory List & Search":
+    if role not in ["Admin", "Sales"]:
+        st.error("Only Admin and Sales can access the Inventory List.")
+    else:
+        st.subheader("Inventory")
+        df = get_active_df()
+        filt_cols = st.columns(4)
+        with filt_cols[0]:
+            q = st.text_input("Search (Make/Model/PN/SN/ID/BIN/Notes)")
+        with filt_cols[1]:
+            make_f = st.text_input("Filter Make")
+        with filt_cols[2]:
+            model_f = st.text_input("Filter Model")
+        with filt_cols[3]:
+            part_f = st.text_input("Filter Part Number")
+
+        if not df.empty:
+            fdf = df.copy()
+            if q:
+                ql = q.lower()
+                fdf = fdf[
+                    fdf.apply(
+                        lambda r: any(
+                            ql in str(r[c]).lower()
+                            for c in [
+                                "make",
+                                "model",
+                                "part_number",
+                                "serial_number",
+                                "id",
+                                "bin_location",
+                                "notes",
+                            ]
+                        ),
+                        axis=1,
+                    )
+                ]
+            if make_f:
+                fdf = fdf[fdf["make"].str.contains(make_f, case=False, na=False)]
+            if model_f:
+                fdf = fdf[fdf["model"].str.contains(model_f, case=False, na=False)]
+            if part_f:
+                fdf = fdf["part_number"].fillna("").str.contains(
+                    part_f, case=False, na=False
+                )
+                fdf = df[fdf]
+
+            from streamlit import column_config
+
+            show_cols = [
+                "id",
+                "make",
+                "model",
+                "part_number",
+                "serial_number",
+                "bin_location",
+                "quantity",
+                "category",
+                "created_at",
+                "photo_url",
+            ]
+            for col in show_cols:
+                if col not in fdf.columns:
+                    fdf[col] = None
+
+            rename = {"photo_url": "Photo"}
+            img_col = column_config.ImageColumn("Photo", width="small")
+            st.dataframe(
+                fdf[show_cols].rename(columns=rename),
+                use_container_width=True,
+                column_config={"Photo": img_col},
+            )
+
+            st.markdown("---")
+            left, mid, right = st.columns([2, 2, 2])
+            with left:
+                st.subheader("Preview / Edit")
+                ids = fdf["id"].tolist()
+                if ids:
+                    sel_id = st.selectbox("Select Item ID", ids)
+                    row = fdf[fdf["id"] == sel_id].iloc[0].to_dict()
+                    if row.get("photo_url"):
+                        try:
+                            st.image(
+                                row["photo_url"],
+                                caption="Photo",
+                                use_column_width=True,
+                            )
+                        except Exception:
+                            pass
+                    with st.form("edit_item"):
+                        new_make = st.text_input("Make", row.get("make") or "")
+                        new_model = st.text_input("Model", row.get("model") or "")
+                        new_pn = st.text_input(
+                            "Part Number (optional)", row.get("part_number") or ""
+                        )
+                        new_sn = st.text_input(
+                            "Serial Number (optional)", row.get("serial_number") or ""
+                        )
+                        new_bin = st.text_input(
+                            "Bin Location *", row.get("bin_location") or ""
+                        )
+                        new_qty = st.number_input(
+                            "Quantity",
+                            min_value=0,
+                            value=int(row.get("quantity", 1) or 0),
+                        )
+                        new_notes = st.text_area("Notes", row.get("notes") or "")
+                        new_category = st.selectbox(
+                            "Category *",
+                            [
+                                "Crankshafts",
+                                "Camshafts",
+                                "Connecting Rods",
+                                "Rocker Arms",
+                                "Lifters",
+                                "Gears",
+                                "Counterweights",
+                            ],
+                            index=(
+                                [
+                                    "Crankshafts",
+                                    "Camshafts",
+                                    "Connecting Rods",
+                                    "Rocker Arms",
+                                    "Lifters",
+                                    "Gears",
+                                    "Counterweights",
+                                ].index(row.get("category"))
+                                if row.get("category")
+                                in [
+                                    "Crankshafts",
+                                    "Camshafts",
+                                    "Connecting Rods",
+                                    "Rocker Arms",
+                                    "Lifters",
+                                    "Gears",
+                                    "Counterweights",
+                                ]
+                                else 0
+                            ),
+                        )
+
+                        # Pricing (Admin sees all, Sales only sees Sale Price)
+                        if role == "Admin":
+                            pcol1, pcol2, pcol3 = st.columns(3)
+                            with pcol1:
+                                new_purchase_price = st.number_input(
+                                    "Purchase Price",
+                                    min_value=0.0,
+                                    step=0.01,
+                                    format="%.2f",
+                                    value=float(row.get("purchase_price") or 0.0),
+                                )
+                            with pcol2:
+                                new_repair_cost = st.number_input(
+                                    "Repair Cost",
+                                    min_value=0.0,
+                                    step=0.01,
+                                    format="%.2f",
+                                    value=float(row.get("repair_cost") or 0.0),
+                                )
+                            with pcol3:
+                                new_sale_price = st.number_input(
+                                    "Sale Price",
+                                    min_value=0.0,
+                                    step=0.01,
+                                    format="%.2f",
+                                    value=float(row.get("sale_price") or 0.0),
+                                )
+                        else:  # Sales
+                            new_purchase_price = row.get("purchase_price")
+                            new_repair_cost = row.get("repair_cost")
+                            new_sale_price = st.number_input(
+                                "Sale Price",
+                                min_value=0.0,
+                                step=0.01,
+                                format="%.2f",
+                                value=float(row.get("sale_price") or 0.0),
+                            )
+
+                        saved = st.form_submit_button("Save changes")
+
+                    if saved:
+                        if not new_make or not new_model or not new_bin:
+                            st.error("Make, Model, and Bin Location are required.")
+                        else:
+                            updates = {
+                                "make": new_make.strip(),
+                                "model": new_model.strip(),
+                                "part_number": (new_pn.strip() or None),
+                                "serial_number": (new_sn.strip() or None),
+                                "bin_location": new_bin.strip(),
+                                "quantity": int(new_qty),
+                                "notes": (new_notes.strip() or None),
+                                "category": new_category,
+                                "sale_price": new_sale_price
+                                if new_sale_price and new_sale_price > 0
+                                else None,
+                            }
+                            if role == "Admin":
+                                updates["purchase_price"] = (
+                                    new_purchase_price
+                                    if new_purchase_price and new_purchase_price > 0
+                                    else None
+                                )
+                                updates["repair_cost"] = (
+                                    new_repair_cost
+                                    if new_repair_cost and new_repair_cost > 0
+                                    else None
+                                )
+                            update_item(sel_id, updates)
+                            st.success("Item updated.")
+
+                    # Print label button for this item
+                    try:
+                        label_pdf = create_single_label_pdf(row)
+                        st.download_button(
+                            label="Print Label for Selected Item",
+                            data=label_pdf,
+                            file_name=f"label_{row['id']}.pdf",
+                            mime="application/pdf",
+                            key=f"inv_label_{row['id']}",
+                        )
+                    except Exception as e:
+                        st.warning(f"Unable to generate label PDF: {e}")
+
+                    # Request pick (Admin or Sales)
+                    if role in ["Admin", "Sales"]:
+                        if not row.get("sold") and row.get("request_status") != "pending":
+                            if st.button("Request Pick"):
+                                update_item(
+                                    sel_id,
+                                    {
+                                        "requested_by": user_name,
+                                        "request_status": "pending",
+                                    },
+                                )
+                                st.success("Pick request created.")
+                                st.experimental_rerun()
+                        elif row.get("request_status") == "pending":
+                            st.info("Pick already requested for this item.")
+
+            with mid:
+                st.subheader("Adjust / Delete")
+                ids2 = fdf["id"].tolist()
+                if ids2:
+                    sel2 = st.selectbox(
+                        "Select Item to Adjust/Delete", ids2, key="sel2"
+                    )
+                    cur_qty = int(
+                        fdf.loc[fdf["id"] == sel2, "quantity"].iloc[0] or 0
+                    )
+                    new_qty2 = st.number_input(
+                        "New Quantity", min_value=0, step=1, value=cur_qty
+                    )
+                    if st.button("Update Quantity"):
+                        update_quantity(sel2, int(new_qty2))
+                        st.success("Quantity updated.")
+                    if role == "Admin":
+                        if st.button("Delete Item"):
+                            st.warning(
+                                "Are you sure you want to delete this item? This cannot be undone."
+                            )
+                            colA, colB = st.columns(2)
+                            with colA:
+                                if st.button("Yes, delete"):
+                                    delete_item(sel2)
+                                    st.success("Item deleted.")
+                                    st.experimental_rerun()
+                            with colB:
+                                st.write("")
                     else:
-                        updates = {
-                            "make": new_make.strip(),
-                            "model": new_model.strip(),
-                            "part_number": (new_pn.strip() or None),
-                            "serial_number": (new_sn.strip() or None),
-                            "bin_location": new_bin.strip(),
-                            "quantity": int(new_qty),
-                            "notes": (new_notes.strip() or None),
+                        st.caption("Only Admin can delete items.")
+
+            with right:
+                st.subheader("Quick Export")
+                st.download_button(
+                    "Download CSV of current view",
+                    data=fdf.to_csv(index=False).encode("utf-8"),
+                    file_name="inventory_filtered_export.csv",
+                    mime="text/csv",
+                )
+
+        else:
+            st.info("No items yet. Add some on the Receive page.")
+
+elif page == "Scan to Pick":
+    if role not in ["Admin", "Picker"]:
+        st.error("Only Admin and Picker can use Scan to Pick.")
+    else:
+        st.subheader("Scan to Pick")
+        st.caption(
+            "Click the box and scan the label. Most scanners send Enter, which submits the form."
+        )
+        df = get_active_df()
+
+        if "scan_result" not in st.session_state:
+            st.session_state.scan_result = None
+        if "confirm_delete" not in st.session_state:
+            st.session_state.confirm_delete = False
+
+        with st.form("scan_form", clear_on_submit=True):
+            scan_code = st.text_input("Scan or type Item ID", key="scan_input")
+            submitted = st.form_submit_button("Process Scan")
+        if submitted and scan_code:
+            st.session_state.scan_result = scan_code.strip()
+
+        code = st.session_state.get("scan_result")
+        if code:
+            match = df[df["id"] == code]
+            if match.empty:
+                st.error(f"No active (unsold) item found with ID: {code}")
+            else:
+                row = match.iloc[0].to_dict()
+                st.success(
+                    f"Found item ID {code}: {row['make']} {row['model']} (BIN {row.get('bin_location','')})"
+                )
+                c1, c2 = st.columns([1, 1])
+                with c1:
+                    st.write("**Item Details**")
+                    st.json(
+                        {
+                            k: row.get(k)
+                            for k in [
+                                "make",
+                                "model",
+                                "part_number",
+                                "serial_number",
+                                "bin_location",
+                                "quantity",
+                                "notes",
+                                "created_at",
+                            ]
                         }
-                        update_item(sel_id, updates)
-                        st.success("Item updated.")
-        with mid:
-            st.subheader("Adjust / Delete")
-            ids2 = fdf["id"].tolist()
-            if ids2:
-                sel2 = st.selectbox("Select Item to Adjust/Delete", ids2, key="sel2")
-                cur_qty = int(fdf.loc[fdf["id"]==sel2,"quantity"].iloc[0])
-                new_qty2 = st.number_input("New Quantity", min_value=0, step=1, value=cur_qty)
-                if st.button("Update Quantity"):
-                    update_quantity(sel2, int(new_qty2))
-                    st.success("Quantity updated.")
-                if st.button("Delete Item"):
-                    st.warning("Are you sure you want to delete this item? This cannot be undone.")
+                    )
+                    if row.get("photo_url"):
+                        try:
+                            st.image(row["photo_url"], caption="Photo", width=300)
+                        except Exception:
+                            pass
+                with c2:
+                    st.write("**Actions**")
+                    with st.form("edit_from_scan"):
+                        new_make = st.text_input("Make", row["make"] or "")
+                        new_model = st.text_input("Model", row["model"] or "")
+                        new_pn = st.text_input(
+                            "Part Number (optional)", row.get("part_number") or ""
+                        )
+                        new_sn = st.text_input(
+                            "Serial Number (optional)", row.get("serial_number") or ""
+                        )
+                        new_bin = st.text_input(
+                            "Bin Location *", row.get("bin_location") or ""
+                        )
+                        new_qty = st.number_input(
+                            "Quantity",
+                            min_value=0,
+                            value=int(row.get("quantity", 1)),
+                        )
+                        new_notes = st.text_area("Notes", row.get("notes") or "")
+                        ok = st.form_submit_button("Save changes")
+                    if ok:
+                        if not new_make or not new_model or not new_bin:
+                            st.error(
+                                "Make, Model, and Bin Location are required."
+                            )
+                        else:
+                            updates = {
+                                "make": new_make.strip(),
+                                "model": new_model.strip(),
+                                "part_number": (new_pn.strip() or None),
+                                "serial_number": (new_sn.strip() or None),
+                                "bin_location": new_bin.strip(),
+                                "quantity": int(new_qty),
+                                "notes": (new_notes.strip() or None),
+                            }
+                            update_item(code, updates)
+                            st.success("Item updated.")
+
                     colA, colB = st.columns(2)
                     with colA:
-                        if st.button("Yes, delete"):
-                            delete_item(sel2)
-                            st.success("Item deleted.")
-                    with colB:
-                        st.write("")
-        with right:
-            st.subheader("Quick Export")
+                        if st.button("Remove part from inventory"):
+                            st.session_state.confirm_delete = True
+                    if st.session_state.get("confirm_delete"):
+                        st.warning(
+                            "Are you sure you want to remove this part? This cannot be undone."
+                        )
+                        cY, cN = st.columns(2)
+                        with cY:
+                            if st.button("Yes, remove"):
+                                delete_item(code)
+                                st.session_state.scan_result = None
+                                st.session_state.confirm_delete = False
+                                st.success("Part removed.")
+                        with cN:
+                            if st.button("Cancel"):
+                                st.session_state.confirm_delete = False
+
+            if st.button("Scan another"):
+                st.session_state.scan_result = None
+
+elif page == "Perform Inventory Audit":
+    if role != "Admin":
+        st.error("Only Admin can perform inventory audits.")
+    else:
+        st.subheader("Inventory Audit")
+        st.caption(
+            "Start an audit, then scan each item once. Use Download to save results."
+        )
+        df = get_active_df()
+
+        if "audit_started" not in st.session_state:
+            st.session_state.audit_started = False
+        if "audit_scanned" not in st.session_state:
+            st.session_state.audit_scanned = set()
+
+        if not st.session_state.audit_started:
+            if st.button("Start Audit Session"):
+                st.session_state.audit_started = True
+                st.session_state.audit_scanned = set()
+        else:
+            colx, coly = st.columns([2, 1])
+            with colx:
+                with st.form("audit_form", clear_on_submit=True):
+                    code = st.text_input("Scan or type Item ID", key="audit_scan")
+                    scanned = st.form_submit_button("Record Scan")
+                if scanned and code:
+                    code = code.strip()
+                    if code in set(df["id"].tolist()):
+                        st.session_state.audit_scanned.add(code)
+                    else:
+                        st.error(f"Unknown ID: {code}")
+
+            with coly:
+                st.metric("Verified", len(st.session_state.audit_scanned))
+                st.metric("Total Items", len(df))
+                st.metric(
+                    "Remaining",
+                    max(0, len(df) - len(st.session_state.audit_scanned)),
+                )
+
+            verified_df = df[df["id"].isin(st.session_state.audit_scanned)].copy()
+            missing_df = df[~df["id"].isin(st.session_state.audit_scanned)].copy()
+
+            st.markdown("### ✅ Verified Items")
+            st.dataframe(
+                verified_df[
+                    ["id", "make", "model", "bin_location", "quantity", "created_at"]
+                ],
+                use_container_width=True,
+            )
+
+            st.markdown("### ❌ Not Yet Verified")
+            st.dataframe(
+                missing_df[
+                    ["id", "make", "model", "bin_location", "quantity", "created_at"]
+                ],
+                use_container_width=True,
+            )
+
+            st.markdown("---")
+            results = []
+            now = datetime.utcnow().isoformat(timespec="seconds")
+            for _, r in df.iterrows():
+                results.append(
+                    {
+                        "id": r["id"],
+                        "make": r["make"],
+                        "model": r["model"],
+                        "bin_location": r.get("bin_location"),
+                        "quantity": r.get("quantity"),
+                        "verified": r["id"] in st.session_state.audit_scanned,
+                        "timestamp": now,
+                    }
+                )
+            out = pd.DataFrame(results)
             st.download_button(
-                "Download CSV of current view",
-                data=fdf.to_csv(index=False).encode("utf-8"),
-                file_name="inventory_filtered_export.csv",
+                "Download Audit Results (CSV)",
+                data=out.to_csv(index=False).encode("utf-8"),
+                file_name=f"audit_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
                 mime="text/csv",
             )
 
-    else:
-        st.info("No items yet. Add some on the Receive page.")
+            if st.button("End Audit Session"):
+                st.session_state.audit_started = False
+                st.session_state.audit_scanned = set()
+                st.success("Audit session ended.")
 
-elif page == "Print Labels":
-    st.subheader("Print Labels")
-    df = load_df()
-    if df.empty:
-        st.info("No items yet.")
+elif page == "Picker Queue":
+    if role not in ["Admin", "Picker"]:
+        st.error("Only Admin and Picker can access the Picker Queue.")
     else:
-        multi = st.multiselect("Select items to print", df["id"].tolist(), help="Choose one or more item IDs.")
-        copies = st.number_input("Labels per selected item", min_value=1, step=1, value=1)
-        st.caption("Avery 5160 layout by default. Adjust below if needed.")
-        with st.expander("Advanced layout options"):
-            cols = st.columns(3)
-            with cols[0]:
-                cols_per_row = st.number_input("Columns", min_value=1, value=3, step=1)
-                rows_per_page = st.number_input("Rows", min_value=1, value=10, step=1)
-            with cols[1]:
-                label_w_in = st.number_input("Label width (in)", min_value=0.5, value=2.625, step=0.125)
-                label_h_in = st.number_input("Label height (in)", min_value=0.5, value=1.0, step=0.125)
-            with cols[2]:
-                left_margin_in = st.number_input("Left margin (in)", min_value=0.0, value=0.1875, step=0.0625)
-                top_margin_in = st.number_input("Top margin (in)", min_value=0.0, value=0.5, step=0.0625)
-                h_spacing_in = st.number_input("Horizontal spacing (in)", min_value=0.0, value=0.125, step=0.0625)
-                v_spacing_in = st.number_input("Vertical spacing (in)", min_value=0.0, value=0.0, step=0.0625)
+        st.subheader("Picker Queue")
 
-        if st.button("Generate PDF"):
-            if not multi:
-                st.error("Select at least one item.")
-            else:
-                use_df = df[df["id"].isin(multi)].copy()
-                from reportlab.lib.pagesizes import letter
-                pdf_bytes = labels_pdf_bytes(
-                    use_df, labels_per_item=int(copies),
-                    page_size=letter, cols=int(cols_per_row), rows=int(rows_per_page),
-                    left_margin=left_margin_in*inch, top_margin=top_margin_in*inch,
-                    label_w=label_w_in*inch, label_h=label_h_in*inch,
-                    h_spacing=h_spacing_in*inch, v_spacing=v_spacing_in*inch
+        eng = get_engine()
+        with eng.connect() as conn:
+            rows = conn.execute(
+                text(
+                    """
+                SELECT *
+                FROM items
+                WHERE request_status = 'pending' AND (sold = FALSE OR sold IS NULL)
+                ORDER BY created_at
+                """
                 )
-                st.download_button("Download labels PDF", data=pdf_bytes, file_name="labels.pdf", mime="application/pdf")
-                st.success("PDF generated.")
+            ).mappings().all()
 
-elif page == "Scan to Pick":
-    st.subheader("Scan to Pick")
-    st.caption("Click the box and scan the label. Most scanners send Enter, which submits the form.")
-    df = load_df()
-
-    if "scan_result" not in st.session_state:
-        st.session_state.scan_result = None
-    if "confirm_delete" not in st.session_state:
-        st.session_state.confirm_delete = False
-
-    with st.form("scan_form", clear_on_submit=True):
-        scan_code = st.text_input("Scan or type Item ID", key="scan_input")
-        submitted = st.form_submit_button("Process Scan")
-    if submitted and scan_code:
-        st.session_state.scan_result = scan_code.strip()
-
-    code = st.session_state.get("scan_result")
-    if code:
-        match = df[df["id"] == code]
-        if match.empty:
-            st.error(f"No item found with ID: {code}")
+        if not rows:
+            st.info("No pending pick requests.")
         else:
-            row = match.iloc[0].to_dict()
-            st.success(f"Found item ID {code}: {row['make']} {row['model']} (BIN {row.get('bin_location','')})")
-            c1, c2 = st.columns([1,1])
-            with c1:
-                st.write("**Item Details**")
-                st.json({k: row.get(k) for k in ["make","model","part_number","serial_number","bin_location","quantity","notes","created_at"]})
-                if row.get("photo_url"):
-                    try:
-                        st.image(row["photo_url"], caption="Photo", width=300)
-                    except Exception:
-                        pass
-            with c2:
-                st.write("**Actions**")
-                with st.form("edit_from_scan"):
-                    new_make = st.text_input("Make", row["make"] or "")
-                    new_model = st.text_input("Model", row["model"] or "")
-                    new_pn = st.text_input("Part Number (optional)", row.get("part_number") or "")
-                    new_sn = st.text_input("Serial Number (optional)", row.get("serial_number") or "")
-                    new_bin = st.text_input("Bin Location *", row.get("bin_location") or "")
-                    new_qty = st.number_input("Quantity", min_value=0, value=int(row.get("quantity",1)))
-                    new_notes = st.text_area("Notes", row.get("notes") or "")
-                    ok = st.form_submit_button("Save changes")
-                if ok:
-                    if not new_make or not new_model or not new_bin:
-                        st.error("Make, Model, and Bin Location are required.")
-                    else:
-                        updates = {
-                            "make": new_make.strip(),
-                            "model": new_model.strip(),
-                            "part_number": (new_pn.strip() or None),
-                            "serial_number": (new_sn.strip() or None),
-                            "bin_location": new_bin.strip(),
-                            "quantity": int(new_qty),
-                            "notes": (new_notes.strip() or None),
-                        }
-                        update_item(code, updates)
-                        st.success("Item updated.")
+            options = {
+                f"{r['make']} {r['model']} (PN: {r.get('part_number') or '-'}) - Bin {r.get('bin_location') or '-'} | Requested by: {r.get('requested_by') or '?'}": r
+                for r in rows
+            }
+            label = st.selectbox("Pick request", list(options.keys()))
+            item = options[label]
 
-                colA, colB = st.columns(2)
-                with colA:
-                    if st.button("Remove part from inventory"):
-                        st.session_state.confirm_delete = True
-                if st.session_state.get("confirm_delete"):
-                    st.warning("Are you sure you want to remove this part? This cannot be undone.")
-                    cY, cN = st.columns(2)
-                    with cY:
-                        if st.button("Yes, remove"):
-                            delete_item(code)
-                            st.session_state.scan_result = None
-                            st.session_state.confirm_delete = False
-                            st.success("Part removed.")
-                    with cN:
-                        if st.button("Cancel"):
-                            st.session_state.confirm_delete = False
+            st.markdown("### Item details")
+            st.write(f"Requested by: **{item.get('requested_by') or '-'}**")
+            st.write(f"Make / Model: {item['make']} {item['model']}")
+            st.write(f"PN: {item.get('part_number') or '-'}")
+            st.write(f"SN: {item.get('serial_number') or '-'}")
+            st.write(f"Bin: {item.get('bin_location') or '-'}")
+            st.write(f"Notes: {item.get('notes') or '-'}")
 
-        if st.button("Scan another"):
-            st.session_state.scan_result = None
+            scan_code = st.text_input(
+                "Scan barcode to confirm item", key=f"scan_{item['id']}"
+            )
 
-elif page == "Perform Inventory Audit":
-    st.subheader("Inventory Audit")
-    st.caption("Start an audit, then scan each item once. Use Download to save results.")
-    df = load_df()
-
-    if "audit_started" not in st.session_state:
-        st.session_state.audit_started = False
-    if "audit_scanned" not in st.session_state:
-        st.session_state.audit_scanned = set()
-
-    if not st.session_state.audit_started:
-        if st.button("Start Audit Session"):
-            st.session_state.audit_started = True
-            st.session_state.audit_scanned = set()
-    else:
-        colx, coly = st.columns([2,1])
-        with colx:
-            with st.form("audit_form", clear_on_submit=True):
-                code = st.text_input("Scan or type Item ID", key="audit_scan")
-                scanned = st.form_submit_button("Record Scan")
-            if scanned and code:
-                code = code.strip()
-                if code in set(df["id"].tolist()):
-                    st.session_state.audit_scanned.add(code)
+            if scan_code:
+                if scan_code.strip() == item["code_value"]:
+                    st.success("Barcode matches. You have the correct item.")
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        if st.button("Mark as Sold"):
+                            with eng.begin() as conn:
+                                conn.execute(
+                                    text(
+                                        """
+                                    UPDATE items
+                                    SET sold = TRUE,
+                                        request_status = 'fulfilled'
+                                    WHERE id = :id
+                                    """
+                                    ),
+                                    {"id": item["id"]},
+                                )
+                            refresh_data()
+                            st.success(
+                                "Item marked as sold and removed from active inventory."
+                            )
+                            st.experimental_rerun()
+                    with col2:
+                        if st.button("Cancel Request / Return to stock"):
+                            with eng.begin() as conn:
+                                conn.execute(
+                                    text(
+                                        """
+                                    UPDATE items
+                                    SET request_status = NULL,
+                                        requested_by = NULL
+                                    WHERE id = :id
+                                    """
+                                    ),
+                                    {"id": item["id"]},
+                                )
+                            refresh_data()
+                            st.info("Request canceled. Item remains in inventory.")
+                            st.experimental_rerun()
                 else:
-                    st.error(f"Unknown ID: {code}")
+                    st.error("Scanned code does not match this item.")
 
-        with coly:
-            st.metric("Verified", len(st.session_state.audit_scanned))
-            st.metric("Total Items", len(df))
-            st.metric("Remaining", max(0, len(df) - len(st.session_state.audit_scanned)))
+elif page == "Sold Archive":
+    if role != "Admin":
+        st.error("Only Admin can access Sold / Archived items.")
+    else:
+        st.subheader("Sold / Archived Items")
 
-        verified_df = df[df["id"].isin(st.session_state.audit_scanned)].copy()
-        missing_df = df[~df["id"].isin(st.session_state.audit_scanned)].copy()
+        eng = get_engine()
+        with eng.connect() as conn:
+            rows = conn.execute(
+                text(
+                    """
+                SELECT *
+                FROM items
+                WHERE sold = TRUE
+                ORDER BY created_at DESC
+                """
+                )
+            ).mappings().all()
 
-        st.markdown("### ✅ Verified Items")
-        st.dataframe(verified_df[["id","make","model","bin_location","quantity","created_at"]], use_container_width=True)
+        if not rows:
+            st.info("No sold items.")
+        else:
+            options = {
+                f"{r['make']} {r['model']} (PN: {r.get('part_number') or '-'}) - Bin {r.get('bin_location') or '-'}": r
+                for r in rows
+            }
+            label = st.selectbox("Sold item", list(options.keys()))
+            item = options[label]
 
-        st.markdown("### ❌ Not Yet Verified")
-        st.dataframe(missing_df[["id","make","model","bin_location","quantity","created_at"]], use_container_width=True)
+            st.markdown("### Details")
+            st.write(f"Make / Model: {item['make']} {item['model']}")
+            st.write(f"PN: {item.get('part_number') or '-'}")
+            st.write(f"SN: {item.get('serial_number') or '-'}")
+            st.write(f"Bin: {item.get('bin_location') or '-'}")
+            st.write(f"Notes: {item.get('notes') or '-'}")
+            st.write(f"Requested by: {item.get('requested_by') or '-'}")
+            st.write(f"Status: {item.get('request_status') or '-'}")
 
-        st.markdown("---")
-        results = []
-        now = datetime.utcnow().isoformat(timespec="seconds")
-        for _, r in df.iterrows():
-            results.append({
-                "id": r["id"],
-                "make": r["make"],
-                "model": r["model"],
-                "bin_location": r.get("bin_location"),
-                "quantity": r.get("quantity"),
-                "verified": r["id"] in st.session_state.audit_scanned,
-                "timestamp": now,
-            })
-        out = pd.DataFrame(results)
-        st.download_button(
-            "Download Audit Results (CSV)",
-            data=out.to_csv(index=False).encode("utf-8"),
-            file_name=f"audit_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-            mime="text/csv",
-        )
-
-        if st.button("End Audit Session"):
-            st.session_state.audit_started = False
-            st.session_state.audit_scanned = set()
-            st.success("Audit session ended.")
+            if st.button("Return to Stock (Unmark Sold)"):
+                with eng.begin() as conn:
+                    conn.execute(
+                        text(
+                            """
+                        UPDATE items
+                        SET sold = FALSE,
+                            request_status = NULL,
+                            requested_by = NULL
+                        WHERE id = :id
+                        """
+                        ),
+                        {"id": item["id"]},
+                    )
+                refresh_data()
+                st.success("Item returned to stock.")
+                st.experimental_rerun()
 
 elif page == "Export/Import":
-    st.subheader("Export / Import")
-    df = load_df()
-    if not df.empty:
-        st.download_button("Download CSV Export (All Items)", data=df.to_csv(index=False).encode("utf-8"), file_name="inventory_export.csv", mime="text/csv")
+    if role != "Admin":
+        st.error("Only Admin can export / import full data.")
     else:
-        st.info("No items to export yet.")
+        st.subheader("Export / Import")
+        df = load_df()
+        if not df.empty:
+            st.download_button(
+                "Download CSV Export (All Items)",
+                data=df.to_csv(index=False).encode("utf-8"),
+                file_name="inventory_export.csv",
+                mime="text/csv",
+            )
+        else:
+            st.info("No items to export yet.")
 
-    st.markdown("---")
-    st.subheader("Bulk Import from CSV")
-    st.caption("CSV must have columns: make, model, part_number (optional), serial_number (optional), quantity, bin_location*. ID, code, and timestamps are auto-generated.")
-    up = st.file_uploader("Upload CSV", type=["csv"])
-    if up is not None:
-        try:
-            imp = pd.read_csv(up).fillna("")
-            required = {"make","model","bin_location"}
-            if not required.issubset(set(imp.columns)):
-                missing = sorted(list(required - set(imp.columns)))
-                st.error(f"Missing required columns: {missing}")
-            else:
-                added = 0
-                for _, row in imp.iterrows():
-                    item_id = str(uuid.uuid4())[:12]
-                    payload = {
-                        "id": item_id,
-                        "make": str(row.get("make","")).strip(),
-                        "model": str(row.get("model","")).strip(),
-                        "part_number": (str(row.get("part_number","")).strip() or None),
-                        "serial_number": (str(row.get("serial_number","")).strip() or None),
-                        "quantity": int(row.get("quantity", 1) or 1),
-                        "photo_url": None,
-                        "code_type": "Barcode (Code128)",
-                        "code_value": item_id,
-                        "bin_location": str(row.get("bin_location","")).strip(),
-                        "notes": (str(row.get("notes","")).strip() or None),
-                        "created_at": datetime.utcnow().isoformat(timespec="seconds")
-                    }
-                    if payload["make"] and payload["model"] and payload["bin_location"]:
-                        insert_item(payload)
-                        added += 1
-                st.success(f"Imported {added} items.")
-        except Exception as e:
-            st.error(f"Import failed: {e}")
+        st.markdown("---")
+        st.subheader("Bulk Import from CSV")
+        st.caption(
+            "CSV must have columns: make, model, part_number (optional), serial_number (optional), quantity, bin_location*. "
+            "ID, code, and timestamps are auto-generated."
+        )
+        up = st.file_uploader("Upload CSV", type=["csv"])
+        if up is not None:
+            try:
+                imp = pd.read_csv(up).fillna("")
+                required = {"make", "model", "bin_location"}
+                if not required.issubset(set(imp.columns)):
+                    missing = sorted(list(required - set(imp.columns)))
+                    st.error(f"Missing required columns: {missing}")
+                else:
+                    added = 0
+                    for _, row in imp.iterrows():
+                        item_id = str(uuid.uuid4())[:12]
+                        payload = {
+                            "id": item_id,
+                            "make": str(row.get("make", "")).strip(),
+                            "model": str(row.get("model", "")).strip(),
+                            "part_number": (
+                                str(row.get("part_number", "")).strip() or None
+                            ),
+                            "serial_number": (
+                                str(row.get("serial_number", "")).strip() or None
+                            ),
+                            "quantity": int(row.get("quantity", 1) or 1),
+                            "photo_url": None,
+                            "code_type": "Barcode (Code128)",
+                            "code_value": item_id,
+                            "bin_location": str(row.get("bin_location", "")).strip(),
+                            "notes": (
+                                str(row.get("notes", "")).strip() or None
+                            ),
+                            "category": str(row.get("category", "")).strip()
+                            or None,
+                            "purchase_price": None,
+                            "repair_cost": None,
+                            "sale_price": None,
+                            "sold": False,
+                            "requested_by": None,
+                            "request_status": None,
+                            "created_at": datetime.utcnow().isoformat(
+                                timespec="seconds"
+                            ),
+                        }
+                        if (
+                            payload["make"]
+                            and payload["model"]
+                            and payload["bin_location"]
+                        ):
+                            insert_item(payload)
+                            added += 1
+                    st.success(f"Imported {added} items.")
+            except Exception as e:
+                st.error(f"Import failed: {e}")
