@@ -299,6 +299,11 @@ if page == "Receive Inventory":
         st.error("Only Admin can receive inventory.")
     else:
         st.subheader("Receive Inventory")
+
+        if "just_added_item" not in st.session_state:
+            st.session_state.just_added_item = None
+
+        # ---------- FORM ----------
         with st.form("receive_form", clear_on_submit=True):
             cols = st.columns(2)
 
@@ -361,63 +366,71 @@ if page == "Receive Inventory":
                     )
 
             submitted = st.form_submit_button("Add to Inventory")
-            if submitted:
-                if not make or not model or not bin_location or category is None:
-                    st.error("Make, Model, Bin Location, and Category are required.")
+
+        # ---------- HANDLE SUBMIT (outside form) ----------
+        if submitted:
+            if not make or not model or not bin_location or category is None:
+                st.error("Make, Model, Bin Location, and Category are required.")
+                st.session_state.just_added_item = None
+            else:
+                item_id = str(uuid.uuid4())[:12]
+                photo_url = save_photo_and_get_url(photo)
+                payload = {
+                    "id": item_id,
+                    "make": make.strip(),
+                    "model": model.strip(),
+                    "part_number": (part_number.strip() or None),
+                    "serial_number": (serial_number.strip() or None),
+                    "quantity": int(quantity),
+                    "photo_url": photo_url,
+                    "code_type": code_type,
+                    "code_value": item_id,
+                    "bin_location": bin_location.strip(),
+                    "notes": (notes.strip() or None),
+                    "category": category,
+                    "purchase_price": purchase_price if purchase_price > 0 else None,
+                    "repair_cost": repair_cost if repair_cost > 0 else None,
+                    "sale_price": sale_price if sale_price > 0 else None,
+                    "sold": False,
+                    "requested_by": None,
+                    "request_status": None,
+                    "created_at": datetime.utcnow().isoformat(timespec="seconds"),
+                }
+                insert_item(payload)
+                # stash it so we can show label + barcode on this rerun
+                st.session_state.just_added_item = payload
+
+        # ---------- SHOW LABEL + BARCODE (outside form) ----------
+        if st.session_state.just_added_item is not None:
+            item = st.session_state.just_added_item
+            st.success(f"Item added with ID: {item['id']}")
+
+            # Print label button
+            try:
+                label_pdf = create_single_label_pdf(item)
+                st.download_button(
+                    label="Print Label",
+                    data=label_pdf,
+                    file_name=f"label_{item['id']}.pdf",
+                    mime="application/pdf",
+                    key=f"recv_label_{item['id']}",
+                )
+            except Exception as e:
+                st.warning(f"Unable to generate label PDF: {e}")
+
+            # Show barcode / QR image
+            try:
+                if item.get("code_type") == "Barcode (Code128)":
+                    img_bytes = generate_barcode_image_bytes(item["code_value"])
                 else:
-                    item_id = str(uuid.uuid4())[:12]
-                    photo_url = save_photo_and_get_url(photo)
-                    payload = {
-                        "id": item_id,
-                        "make": make.strip(),
-                        "model": model.strip(),
-                        "part_number": (part_number.strip() or None),
-                        "serial_number": (serial_number.strip() or None),
-                        "quantity": int(quantity),
-                        "photo_url": photo_url,
-                        "code_type": code_type,
-                        "code_value": item_id,
-                        "bin_location": bin_location.strip(),
-                        "notes": (notes.strip() or None),
-                        "category": category,
-                        "purchase_price": purchase_price if purchase_price > 0 else None,
-                        "repair_cost": repair_cost if repair_cost > 0 else None,
-                        "sale_price": sale_price if sale_price > 0 else None,
-                        "sold": False,
-                        "requested_by": None,
-                        "request_status": None,
-                        "created_at": datetime.utcnow().isoformat(timespec="seconds"),
-                    }
-                    insert_item(payload)
-                    st.success(f"Item added with ID: {item_id}")
-
-                    # Label download
-                    try:
-                        label_pdf = create_single_label_pdf(payload)
-                        st.download_button(
-                            label="Print Label",
-                            data=label_pdf,
-                            file_name=f"label_{item_id}.pdf",
-                            mime="application/pdf",
-                            key=f"recv_label_{item_id}",
-                        )
-                    except Exception as e:
-                        st.warning(f"Unable to generate label PDF: {e}")
-
-                    # Show barcode / QR
-                    try:
-                        img_bytes = (
-                            generate_barcode_image_bytes(item_id)
-                            if code_type == "Barcode (Code128)"
-                            else generate_qr_image_bytes(item_id)
-                        )
-                        st.image(
-                            img_bytes,
-                            caption=f"{code_type} for {item_id}",
-                            width=260,
-                        )
-                    except Exception:
-                        pass
+                    img_bytes = generate_qr_image_bytes(item["code_value"])
+                st.image(
+                    img_bytes,
+                    caption=f"{item.get('code_type')} for {item['id']}",
+                    width=260,
+                )
+            except Exception:
+                pass
 
 elif page == "Inventory List & Search":
     if role not in ["Admin", "Sales"]:
