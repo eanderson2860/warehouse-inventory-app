@@ -21,47 +21,7 @@ from reportlab.pdfgen import canvas
 from reportlab.lib.units import inch
 from reportlab.lib.utils import ImageReader
 
-
-# ------------------------------------------------
-# Mobile-friendly CSS for iPad Mini
-# ------------------------------------------------
-def load_mobile_css():
-    MOBILE_CSS = """
-    <style>
-    /* Bigger base font for tablet */
-    html, body, [data-testid="stAppViewContainer"] * {
-      font-size: 18px !important;
-    }
-
-    /* Bigger buttons */
-    button[kind="primary"], button[kind="secondary"] {
-      padding: 0.75rem 1.25rem !important;
-      border-radius: 12px !important;
-    }
-
-    /* Make selectboxes and text inputs tall enough for fingers */
-    div[data-baseweb="input"] > div,
-    div[data-baseweb="select"] > div {
-      min-height: 48px !important;
-    }
-
-    /* Give table rows a bit more height for tapping */
-    [data-testid="stDataFrame"] tbody tr td {
-      padding-top: 0.5rem !important;
-      padding-bottom: 0.5rem !important;
-    }
-
-    /* Slightly bigger sidebar text if used */
-    [data-testid="stSidebar"] * {
-      font-size: 17px !important;
-    }
-    </style>
-    """
-    st.markdown(MOBILE_CSS, unsafe_allow_html=True)
-
-
 st.set_page_config(page_title="Warehouse Inventory (Cloud)", layout="wide")
-load_mobile_css()
 
 LOGO_FILE = "AS logo shaded EASA and CAA.jpg"
 if os.path.exists(LOGO_FILE):
@@ -589,12 +549,12 @@ elif page == "Inventory List & Search":
                 if col not in fdf.columns:
                     fdf[col] = None
 
-            # Keep the DB column name as photo_url; configure it as an image column
+            rename = {"photo_url": "Photo"}
             img_col = column_config.ImageColumn("Photo", width="small")
             st.dataframe(
-                fdf[show_cols],
+                fdf[show_cols].rename(columns=rename),
                 use_container_width=True,
-                column_config={"photo_url": img_col},
+                column_config={"Photo": img_col},
             )
 
             st.markdown("---")
@@ -830,11 +790,10 @@ elif page == "Scan to Pick":
     if role not in ["Admin", "Picker"]:
         st.error("Only Admin and Picker can use Scan to Pick.")
     else:
-        st.subheader("📦 Scan to Pick")
+        st.subheader("Scan to Pick")
         st.caption(
-            "Tap the scan box once, then use the Bluetooth scanner. Most scanners send Enter, which submits the form."
+            "Click the box and scan the label. Most scanners send Enter, which submits the form."
         )
-
         df = get_active_df()
 
         if "scan_result" not in st.session_state:
@@ -842,71 +801,50 @@ elif page == "Scan to Pick":
         if "confirm_delete" not in st.session_state:
             st.session_state.confirm_delete = False
 
-        # Two-column layout: scan on the left, info+photo on the right
-        scan_col, info_col = st.columns([2, 3])
-
-        with scan_col:
-            with st.form("scan_form", clear_on_submit=True):
-                scan_code = st.text_input(
-                    "Scan or type Item ID",
-                    key="scan_input",
-                    placeholder="Tap here, then scan barcode",
-                )
-                submitted = st.form_submit_button("Process Scan")
-            if submitted and scan_code:
-                st.session_state.scan_result = scan_code.strip()
+        with st.form("scan_form", clear_on_submit=True):
+            scan_code = st.text_input("Scan or type Item ID", key="scan_input")
+            submitted = st.form_submit_button("Process Scan")
+        if submitted and scan_code:
+            st.session_state.scan_result = scan_code.strip()
 
         code = st.session_state.get("scan_result")
+        if code:
+            # ✅ Case-insensitive lookup of ID
+            code_lower = code.lower()
+            df["id_lower"] = df["id"].str.lower()
+            match = df[df["id_lower"] == code_lower]
 
-        with info_col:
-            if code:
-                # ✅ Case-insensitive lookup of ID
-                code_lower = code.lower()
-                df["id_lower"] = df["id"].str.lower()
-                match = df[df["id_lower"] == code_lower]
-
-                if match.empty:
-                    st.error(f"No active (unsold) item found with ID: {code}")
-                else:
-                    row = match.iloc[0].to_dict()
-                    st.success(
-                        f"Found item ID {code}: {row['make']} {row['model']} (BIN {row.get('bin_location','')})"
+            if match.empty:
+                st.error(f"No active (unsold) item found with ID: {code}")
+            else:
+                row = match.iloc[0].to_dict()
+                st.success(
+                    f"Found item ID {code}: {row['make']} {row['model']} (BIN {row.get('bin_location','')})"
+                )
+                c1, c2 = st.columns([1, 1])
+                with c1:
+                    st.write("**Item Details**")
+                    st.json(
+                        {
+                            k: row.get(k)
+                            for k in [
+                                "make",
+                                "model",
+                                "part_number",
+                                "serial_number",
+                                "bin_location",
+                                "quantity",
+                                "notes",
+                                "created_at",
+                            ]
+                        }
                     )
-
-                    # Details + photo side-by-side for tablet
-                    c1, c2 = st.columns([1, 1])
-                    with c1:
-                        st.write("**Item Details**")
-                        st.json(
-                            {
-                                k: row.get(k)
-                                for k in [
-                                    "make",
-                                    "model",
-                                    "part_number",
-                                    "serial_number",
-                                    "bin_location",
-                                    "quantity",
-                                    "notes",
-                                    "created_at",
-                                ]
-                            }
-                        )
-                    with c2:
-                        if row.get("photo_url"):
-                            try:
-                                st.image(
-                                    row["photo_url"],
-                                    caption="Part Photo",
-                                    use_column_width=True,
-                                )
-                            except Exception:
-                                st.info("Photo URL present but could not be displayed.")
-                        else:
-                            st.info("No photo saved for this item.")
-
-                    # Actions under details/photo
-                    st.markdown("---")
+                    if row.get("photo_url"):
+                        try:
+                            st.image(row["photo_url"], caption="Photo", width=300)
+                        except Exception:
+                            pass
+                with c2:
                     st.write("**Actions**")
                     with st.form("edit_from_scan"):
                         new_make = st.text_input("Make", row["make"] or "")
@@ -965,8 +903,8 @@ elif page == "Scan to Pick":
                             if st.button("Cancel"):
                                 st.session_state.confirm_delete = False
 
-                    if st.button("Scan another"):
-                        st.session_state.scan_result = None
+            if st.button("Scan another"):
+                st.session_state.scan_result = None
 
 elif page == "Perform Inventory Audit":
     if role != "Admin":
@@ -1304,13 +1242,13 @@ elif page == "Export/Import":
                                 timespec="seconds"
                             ),
                         }
-                        if (
-                            payload["make"]
-                            and payload["model"]
-                            and payload["bin_location"]
-                        ):
-                            insert_item(payload)
-                            added += 1
+                            if (
+                                payload["make"]
+                                and payload["model"]
+                                and payload["bin_location"]
+                            ):
+                                insert_item(payload)
+                                added += 1
                     st.success(f"Imported {added} items.")
             except Exception as e:
                 st.error(f"Import failed: {e}")
