@@ -310,17 +310,20 @@ def save_photo_and_get_url(file):
     try:
         raw = file.read()
         public_url = upload_image_and_get_url(raw, filename=f"{uuid.uuid4().hex}.jpg")
+
+        # Only use a real public URL in the database
         if public_url:
             return public_url
-        # fallback: local temp (non-persistent)
-        tmp_dir = "images"
-        os.makedirs(tmp_dir, exist_ok=True)
-        path = os.path.join(tmp_dir, f"{uuid.uuid4().hex}.jpg")
-        with open(path, "wb") as f:
-            f.write(raw)
-        return path
-    except Exception:
+
+        # If we get here, upload failed or returned an empty string
+        # For cloud deployment, don't store a local path – just skip the photo.
+        st.warning("Photo upload failed; image will not be saved.")
         return None
+
+    except Exception as e:
+        st.error(f"Photo upload error: {e}")
+        return None
+
 
 
 # ----------------------------
