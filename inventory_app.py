@@ -1242,13 +1242,14 @@ elif page == "Export/Import":
                                 timespec="seconds"
                             ),
                         }
-                            if (
-                                payload["make"]
-                                and payload["model"]
-                                and payload["bin_location"]
-                            ):
-                                insert_item(payload)
-                                added += 1
+                        # ✅ this if needs to be at the SAME indent level as payload
+                        if (
+                            payload["make"]
+                            and payload["model"]
+                            and payload["bin_location"]
+                        ):
+                            insert_item(payload)
+                            added += 1
                     st.success(f"Imported {added} items.")
             except Exception as e:
                 st.error(f"Import failed: {e}")
