@@ -526,10 +526,10 @@ elif page == "Inventory List & Search":
             if model_f:
                 fdf = fdf[fdf["model"].str.contains(model_f, case=False, na=False)]
             if part_f:
-                fdf = fdf["part_number"].fillna("").str.contains(
+                fdf_mask = fdf["part_number"].fillna("").str.contains(
                     part_f, case=False, na=False
                 )
-                fdf = df[fdf]
+                fdf = fdf[fdf_mask]
 
             from streamlit import column_config
 
@@ -711,7 +711,7 @@ elif page == "Inventory List & Search":
                     except Exception as e:
                         st.warning(f"Unable to generate label PDF: {e}")
 
-                                       # Request pick (Admin or Sales)
+                    # Request pick (Admin or Sales)
                     if role in ["Admin", "Sales"]:
                         req_status = row.get("request_status")
                         # Make sure "sold" behaves like a True/False
@@ -741,7 +741,6 @@ elif page == "Inventory List & Search":
                                     )
                                     st.success("Pick request cleared; item can be picked again.")
                                     st.rerun()
-
 
             with mid:
                 st.subheader("Adjust / Delete")
@@ -810,10 +809,12 @@ elif page == "Scan to Pick":
 
         code = st.session_state.get("scan_result")
         if code:
+            # ✅ Case-insensitive lookup of ID
             code_lower = code.lower()
-df["id_lower"] = df["id"].str.lower()
-match = df[df["id_lower"] == code_lower]
-                if match.empty:
+            df["id_lower"] = df["id"].str.lower()
+            match = df[df["id_lower"] == code_lower]
+
+            if match.empty:
                 st.error(f"No active (unsold) item found with ID: {code}")
             else:
                 row = match.iloc[0].to_dict()
@@ -879,7 +880,8 @@ match = df[df["id_lower"] == code_lower]
                                 "quantity": int(new_qty),
                                 "notes": (new_notes.strip() or None),
                             }
-                            update_item(code, updates)
+                            # Use the actual ID from the matched row
+                            update_item(row["id"], updates)
                             st.success("Item updated.")
 
                     colA, colB = st.columns(2)
@@ -893,7 +895,7 @@ match = df[df["id_lower"] == code_lower]
                         cY, cN = st.columns(2)
                         with cY:
                             if st.button("Yes, remove"):
-                                delete_item(code)
+                                delete_item(row["id"])
                                 st.session_state.scan_result = None
                                 st.session_state.confirm_delete = False
                                 st.success("Part removed.")
@@ -931,8 +933,12 @@ elif page == "Perform Inventory Audit":
                     scanned = st.form_submit_button("Record Scan")
                 if scanned and code:
                     code = code.strip()
-                    if code in set(df["id"].tolist()):
-                        st.session_state.audit_scanned.add(code)
+                    code_lower = code.lower()
+                    # Case-insensitive match to find the real ID
+                    matches = df[df["id"].str.lower() == code_lower]
+                    if not matches.empty:
+                        real_id = matches["id"].iloc[0]
+                        st.session_state.audit_scanned.add(real_id)
                     else:
                         st.error(f"Unknown ID: {code}")
 
@@ -1071,7 +1077,8 @@ elif page == "Picker Queue":
                 )
 
                 if scan_code:
-                    if scan_code.strip() == item["code_value"]:
+                    # ✅ Case-insensitive comparison of scanned code to stored value
+                    if scan_code.strip().lower() == str(item["code_value"]).lower():
                         st.success("Barcode matches. You have the correct item.")
                         col1, col2 = st.columns(2)
                         with col1:
@@ -1235,13 +1242,13 @@ elif page == "Export/Import":
                                 timespec="seconds"
                             ),
                         }
-                        if (
-                            payload["make"]
-                            and payload["model"]
-                            and payload["bin_location"]
-                        ):
-                            insert_item(payload)
-                            added += 1
+                            if (
+                                payload["make"]
+                                and payload["model"]
+                                and payload["bin_location"]
+                            ):
+                                insert_item(payload)
+                                added += 1
                     st.success(f"Imported {added} items.")
             except Exception as e:
                 st.error(f"Import failed: {e}")
