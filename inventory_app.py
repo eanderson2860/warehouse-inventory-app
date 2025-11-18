@@ -176,7 +176,7 @@ def generate_qr_image_bytes(code_value: str) -> bytes:
 def create_single_label_pdf(item: dict) -> bytes:
     """
     Create a 4" x 6" label PDF for a single item.
-    Designed for 4x6 warehouse / shipping labels.
+    Includes make/model, PN, SN, bin, qty, category, notes, and code.
     """
     # 4" wide x 6" tall
     label_width = 4 * inch
@@ -197,28 +197,60 @@ def create_single_label_pdf(item: dict) -> bytes:
     serial_number = item.get("serial_number") or ""
     bin_location = item.get("bin_location") or ""
     quantity = item.get("quantity", 1)
+    category = (item.get("category") or "").strip()
+    notes = (item.get("notes") or "").strip()
 
-    # ---------- TEXT BLOCK AT TOP ----------
+    # ---------- TITLE LINE ----------
     title_line = f"{make} {model}".strip()
     if title_line:
         c.setFont("Helvetica-Bold", 16)
         c.drawString(x, y, title_line[:40])
         y -= 0.4 * inch
 
+    # ---------- KEY FIELDS (INCLUDING CATEGORY) ----------
     c.setFont("Helvetica-Bold", 12)
     info_lines = [
         f"PN: {part_number or '-'}",
         f"SN: {serial_number or '-'}",
         f"Bin: {bin_location or '-'}",
         f"Qty: {quantity}",
+        f"Cat: {category or '-'}",
     ]
 
     for line in info_lines:
         c.drawString(x, y, line[:50])
         y -= 0.3 * inch
 
+    # ---------- NOTES BLOCK (WRAPPED) ----------
+    if notes:
+        y -= 0.1 * inch
+        c.setFont("Helvetica", 10)
+        c.drawString(x, y, "Notes:")
+        y -= 0.25 * inch
+
+        c.setFont("Helvetica", 9)
+        words = notes.split()
+        line = ""
+        wrapped_lines = []
+        char_limit = 60  # rough width control; tweak if needed
+
+        for w in words:
+            candidate = f"{line} {w}".strip()
+            if len(candidate) > char_limit:
+                wrapped_lines.append(line)
+                line = w
+            else:
+                line = candidate
+        if line:
+            wrapped_lines.append(line)
+
+        # Limit number of note lines so we leave room for the barcode
+        for nl in wrapped_lines[:4]:
+            c.drawString(x + 0.15 * inch, y, nl[:80])
+            y -= 0.22 * inch
+
     # Leave some space between text and barcode
-    y -= 0.2 * inch
+    y -= 0.15 * inch
 
     # ---------- BARCODE / QR BLOCK AT BOTTOM ----------
     code_value = item.get("code_value", "")
