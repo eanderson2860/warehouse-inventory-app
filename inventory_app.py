@@ -811,11 +811,11 @@ elif page == "Scan to Pick":
         code = st.session_state.get("scan_result")
         if code:
             code_lower = code.lower()
-            df["id_lower"] = df["id"].str.lower()
-            match = df[df["id_lower"] == code_lower]
-        if match.empty:
+df["id_lower"] = df["id"].str.lower()
+match = df[df["id_lower"] == code_lower]
+            if match.empty:
                 st.error(f"No active (unsold) item found with ID: {code}")
-        else:
+            else:
                 row = match.iloc[0].to_dict()
                 st.success(
                     f"Found item ID {code}: {row['make']} {row['model']} (BIN {row.get('bin_location','')})"
