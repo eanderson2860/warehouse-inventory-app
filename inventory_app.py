@@ -175,17 +175,18 @@ def generate_qr_image_bytes(code_value: str) -> bytes:
 
 def create_single_label_pdf(item: dict) -> bytes:
     """
-    Create a 4" x 2 5/16" label PDF for a single item.
-    Designed for Dymo-style address labels.
+    Create a 4" x 6" label PDF for a single item.
+    Designed for 4x6 warehouse / shipping labels.
     """
+    # 4" wide x 6" tall
     label_width = 4 * inch
-    label_height = (2 + 5/16) * inch  # 2.3125"
+    label_height = 6 * inch
 
     buffer = io.BytesIO()
     c = canvas.Canvas(buffer, pagesize=(label_width, label_height))
 
-    margin_x = 0.2 * inch
-    margin_y = 0.2 * inch
+    margin_x = 0.3 * inch
+    margin_y = 0.3 * inch
 
     x = margin_x
     y = label_height - margin_y
@@ -197,22 +198,32 @@ def create_single_label_pdf(item: dict) -> bytes:
     bin_location = item.get("bin_location") or ""
     quantity = item.get("quantity", 1)
 
-    lines = [
-        f"{make} {model}".strip(),
+    # ---------- TEXT BLOCK AT TOP ----------
+    title_line = f"{make} {model}".strip()
+    if title_line:
+        c.setFont("Helvetica-Bold", 16)
+        c.drawString(x, y, title_line[:40])
+        y -= 0.4 * inch
+
+    c.setFont("Helvetica-Bold", 12)
+    info_lines = [
         f"PN: {part_number or '-'}",
         f"SN: {serial_number or '-'}",
         f"Bin: {bin_location or '-'}",
         f"Qty: {quantity}",
     ]
 
-    for line in lines:
-        c.setFont("Helvetica-Bold", 10)
-        c.drawString(x, y, line[:40])
-        y -= 0.24 * inch
+    for line in info_lines:
+        c.drawString(x, y, line[:50])
+        y -= 0.3 * inch
 
-    # Draw barcode or QR on the right side
+    # Leave some space between text and barcode
+    y -= 0.2 * inch
+
+    # ---------- BARCODE / QR BLOCK AT BOTTOM ----------
     code_value = item.get("code_value", "")
     code_type = item.get("code_type", "Barcode (Code128)")
+
     try:
         if code_type == "Barcode (Code128)":
             img_bytes = generate_barcode_image_bytes(code_value)
@@ -222,14 +233,17 @@ def create_single_label_pdf(item: dict) -> bytes:
         img = Image.open(io.BytesIO(img_bytes))
         img_w, img_h = img.size
 
-        code_box_w = label_width * 0.45
-        code_box_h = label_height * 0.7
+        # Use most of the width, about 1.75" tall for the code
+        code_box_w = label_width - 2 * margin_x
+        code_box_h = 1.75 * inch
+
         scale = min(code_box_w / img_w, code_box_h / img_h)
         disp_w = img_w * scale
         disp_h = img_h * scale
 
-        code_x = label_width - disp_w - margin_x
-        code_y = (label_height - disp_h) / 2
+        code_x = (label_width - disp_w) / 2  # center horizontally
+        code_y = margin_y + 0.4 * inch       # leave a bit of bottom margin
+
         c.drawImage(
             ImageReader(img),
             code_x,
@@ -239,12 +253,18 @@ def create_single_label_pdf(item: dict) -> bytes:
             preserveAspectRatio=True,
             mask="auto",
         )
-    except Exception:
-        pass
 
-    # Small ID text
-    c.setFont("Helvetica", 7)
-    c.drawString(margin_x, margin_y, f"ID: {code_value}")
+        # Human-readable ID text just under the barcode
+        c.setFont("Helvetica", 10)
+        c.drawCentredString(
+            label_width / 2,
+            margin_y,
+            f"ID: {code_value}",
+        )
+    except Exception:
+        # Fallback: just print the ID text at the bottom
+        c.setFont("Helvetica", 10)
+        c.drawString(margin_x, margin_y, f"ID: {code_value}")
 
     c.showPage()
     c.save()
