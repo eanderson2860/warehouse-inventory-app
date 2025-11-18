@@ -786,6 +786,7 @@ elif page == "Inventory List & Search":
         else:
             st.info("No items yet. Add some on the Receive page.")
 
+
 elif page == "Scan to Pick":
     if role not in ["Admin", "Picker"]:
         st.error("Only Admin and Picker can use Scan to Pick.")
@@ -819,9 +820,12 @@ elif page == "Scan to Pick":
             else:
                 row = match.iloc[0].to_dict()
                 st.success(
-                    f"Found item ID {code}: {row['make']} {row['model']} (BIN {row.get('bin_location','')})"
+                    f"Found item ID {code}: {row['make']} {row['model']} "
+                    f"(BIN {row.get('bin_location','')})"
                 )
+
                 c1, c2 = st.columns([1, 1])
+
                 with c1:
                     st.write("**Item Details**")
                     st.json(
@@ -834,16 +838,24 @@ elif page == "Scan to Pick":
                                 "serial_number",
                                 "bin_location",
                                 "quantity",
+                                "category",
                                 "notes",
                                 "created_at",
                             ]
                         }
                     )
+
+                    # 📷 Show photo if available
                     if row.get("photo_url"):
                         try:
-                            st.image(row["photo_url"], caption="Photo", width=300)
+                            st.image(
+                                row["photo_url"],
+                                caption="Item Photo",
+                                use_column_width=True,
+                            )
                         except Exception:
-                            pass
+                            st.warning("Photo URL exists but could not be displayed.")
+
                 with c2:
                     st.write("**Actions**")
                     with st.form("edit_from_scan"):
@@ -865,11 +877,10 @@ elif page == "Scan to Pick":
                         )
                         new_notes = st.text_area("Notes", row.get("notes") or "")
                         ok = st.form_submit_button("Save changes")
+
                     if ok:
                         if not new_make or not new_model or not new_bin:
-                            st.error(
-                                "Make, Model, and Bin Location are required."
-                            )
+                            st.error("Make, Model, and Bin Location are required.")
                         else:
                             updates = {
                                 "make": new_make.strip(),
@@ -905,6 +916,7 @@ elif page == "Scan to Pick":
 
             if st.button("Scan another"):
                 st.session_state.scan_result = None
+
 
 elif page == "Perform Inventory Audit":
     if role != "Admin":
