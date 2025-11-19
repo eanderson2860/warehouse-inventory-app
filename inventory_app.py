@@ -306,23 +306,32 @@ def create_single_label_pdf(item: dict) -> bytes:
 
 def save_photo_and_get_url(file):
     if file is None:
+        st.warning("DEBUG: No file provided to save_photo_and_get_url()")
         return None
+
     try:
         raw = file.read()
-        public_url = upload_image_and_get_url(raw, filename=f"{uuid.uuid4().hex}.jpg")
-
-        # Only use a real public URL in the database
-        if public_url:
-            return public_url
-
-        # If we get here, upload failed or returned an empty string
-        # For cloud deployment, don't store a local path – just skip the photo.
-        st.warning("Photo upload failed; image will not be saved.")
-        return None
-
+        st.write("DEBUG: File read successfully, size:", len(raw))
     except Exception as e:
-        st.error(f"Photo upload error: {e}")
+        st.error(f"DEBUG: Error reading uploaded file: {e}")
         return None
+
+    # Try Supabase upload
+    try:
+        public_url = upload_image_and_get_url(raw, filename=f"{uuid.uuid4().hex}.jpg")
+        st.write("DEBUG: upload_image_and_get_url returned:", public_url)
+    except Exception as e:
+        st.error(f"DEBUG: upload_image_and_get_url threw an exception: {e}")
+        return None
+
+    # If Supabase returned a valid URL
+    if public_url:
+        st.success("DEBUG: Supabase upload successful.")
+        return public_url
+
+    # If public_url is empty or None
+    st.warning("DEBUG: Supabase returned None or empty URL — upload failed.")
+    return None
 
 
 
