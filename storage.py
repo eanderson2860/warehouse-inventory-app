@@ -69,11 +69,16 @@ def upload_image_and_get_url(content: bytes, filename: str, bucket: Optional[str
     path = filename
 
     try:
-        sb.storage.from_(bucket).upload(
-            path=path,
-            file=content,
-            file_options={"content-type": "image/jpeg", "upsert": True},
-        )
+       sb.storage.from_(bucket).upload(
+    path=path,
+    file=content,
+    file_options={
+        "content-type": "image/jpeg",
+        "upsert": "true",        # 👈 string, not True
+        # you could also add "cache-control": "3600" if you like
+    },
+)
+ 
         public_url = sb.storage.from_(bucket).get_public_url(path)
         st.write("DEBUG(storage): get_public_url returned:", public_url)
         return public_url
