@@ -21,7 +21,46 @@ from reportlab.pdfgen import canvas
 from reportlab.lib.units import inch
 from reportlab.lib.utils import ImageReader
 
+# -------------------------------------------------
+# Page config + global CSS (better for iPad Mini)
+# -------------------------------------------------
 st.set_page_config(page_title="Warehouse Inventory (Cloud)", layout="wide")
+
+st.markdown(
+    """
+    <style>
+    /* Center main content and limit width for small screens */
+    .block-container {
+        max-width: 1000px;
+        padding-top: 0.5rem;
+        padding-bottom: 2rem;
+        margin-left: auto;
+        margin-right: auto;
+    }
+
+    /* Bigger touch targets for buttons */
+    div.stButton > button, div.stDownloadButton > button {
+        padding: 0.6rem 1.4rem;
+        font-size: 1rem;
+        border-radius: 0.6rem;
+    }
+
+    /* Make text inputs and selects easier to read/tap */
+    input, textarea, select {
+        font-size: 1rem !important;
+    }
+
+    /* Reduce padding around forms on small screens */
+    @media (max-width: 900px) {
+        .block-container {
+            padding-left: 0.7rem;
+            padding-right: 0.7rem;
+        }
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 LOGO_FILE = "AS logo shaded EASA and CAA.jpg"
 if os.path.exists(LOGO_FILE):
@@ -325,9 +364,8 @@ def save_photo_and_get_url(file):
         return None
 
 
-
 # ----------------------------
-# Sidebar navigation
+# Sidebar navigation + tablet toggle
 # ----------------------------
 with st.sidebar:
     st.header("Navigation")
@@ -344,6 +382,7 @@ with st.sidebar:
         ],
     )
     st.caption("Streamlit Cloud + Postgres. Set secrets in the deployment settings.")
+    tablet_mode = st.toggle("📱 Tablet layout (iPad)", value=True)
 
 
 # ----------------------------
@@ -360,7 +399,11 @@ if page == "Receive Inventory":
 
         # ---------- FORM ----------
         with st.form("receive_form", clear_on_submit=True):
-            cols = st.columns(2)
+            # Two columns on desktop, stacked on tablet
+            if tablet_mode:
+                cols = [st.container(), st.container()]
+            else:
+                cols = st.columns(2)
 
             with cols[0]:
                 make = st.text_input("Make *")
@@ -735,7 +778,7 @@ elif page == "Inventory List & Search":
                         elif req_status == "pending":
                             st.info("Pick already requested for this item.")
 
-                            # 🔹 Admin-only escape hatch to clear a stuck pick request
+                            # Admin-only escape hatch to clear a stuck pick request
                             if role == "Admin":
                                 if st.button("Clear Pick Request (Admin only)"):
                                     update_item(
@@ -796,7 +839,7 @@ elif page == "Scan to Pick":
     else:
         st.subheader("Scan to Pick")
         st.caption(
-            "Click the box and scan the label. Most scanners send Enter, which submits the form."
+            "Tap the box and scan the label. Most scanners send Enter, which submits the form."
         )
         df = get_active_df()
 
@@ -806,14 +849,18 @@ elif page == "Scan to Pick":
             st.session_state.confirm_delete = False
 
         with st.form("scan_form", clear_on_submit=True):
-            scan_code = st.text_input("Scan or type Item ID", key="scan_input")
+            scan_code = st.text_input(
+                "Scan or type Item ID",
+                key="scan_input",
+                placeholder="Tap here, then scan barcode",
+            )
             submitted = st.form_submit_button("Process Scan")
         if submitted and scan_code:
             st.session_state.scan_result = scan_code.strip()
 
         code = st.session_state.get("scan_result")
         if code:
-            # ✅ Case-insensitive lookup of ID
+            # Case-insensitive lookup of ID
             code_lower = code.lower()
             df["id_lower"] = df["id"].str.lower()
             match = df[df["id_lower"] == code_lower]
@@ -848,7 +895,7 @@ elif page == "Scan to Pick":
                         }
                     )
 
-                    # 📷 Show photo if available
+                    # Show photo if available
                     if row.get("photo_url"):
                         try:
                             st.image(
@@ -1092,7 +1139,7 @@ elif page == "Picker Queue":
                 )
 
                 if scan_code:
-                    # ✅ Case-insensitive comparison of scanned code to stored value
+                    # Case-insensitive comparison of scanned code to stored value
                     if scan_code.strip().lower() == str(item["code_value"]).lower():
                         st.success("Barcode matches. You have the correct item.")
                         col1, col2 = st.columns(2)
@@ -1166,7 +1213,7 @@ elif page == "Sold Archive":
             label = st.selectbox("Sold item", list(options.keys()))
             item = options[label]
 
-            # --- Layout: photo on left, details on right ---
+            # Layout: photo on left, details on right
             col_photo, col_details = st.columns([1, 2])
 
             with col_photo:
@@ -1270,7 +1317,6 @@ elif page == "Export/Import":
                                 timespec="seconds"
                             ),
                         }
-                        # ✅ this if needs to be at the SAME indent level as payload
                         if (
                             payload["make"]
                             and payload["model"]
