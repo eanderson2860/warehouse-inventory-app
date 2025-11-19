@@ -1148,11 +1148,11 @@ elif page == "Sold Archive":
             rows = conn.execute(
                 text(
                     """
-                SELECT *
-                FROM items
-                WHERE sold = TRUE
-                ORDER BY created_at DESC
-                """
+                    SELECT *
+                    FROM items
+                    WHERE sold = TRUE
+                    ORDER BY created_at DESC
+                    """
                 )
             ).mappings().all()
 
@@ -1166,32 +1166,45 @@ elif page == "Sold Archive":
             label = st.selectbox("Sold item", list(options.keys()))
             item = options[label]
 
-            st.markdown("### Details")
-            st.write(f"Make / Model: {item['make']} {item['model']}")
-            st.write(f"PN: {item.get('part_number') or '-'}")
-            st.write(f"SN: {item.get('serial_number') or '-'}")
-            st.write(f"Bin: {item.get('bin_location') or '-'}")
-            st.write(f"Notes: {item.get('notes') or '-'}")
-            st.write(f"Requested by: {item.get('requested_by') or '-'}")
-            st.write(f"Status: {item.get('request_status') or '-'}")
+            # --- Layout: photo on left, details on right ---
+            col_photo, col_details = st.columns([1, 2])
 
-            if st.button("Return to Stock (Unmark Sold)"):
-                with eng.begin() as conn:
-                    conn.execute(
-                        text(
-                            """
-                        UPDATE items
-                        SET sold = FALSE,
-                            request_status = NULL,
-                            requested_by = NULL
-                        WHERE id = :id
-                        """
-                        ),
-                        {"id": item["id"]},
-                    )
-                refresh_data()
-                st.success("Item returned to stock.")
-                st.rerun()
+            with col_photo:
+                photo_url = item.get("photo_url")
+                if photo_url:
+                    try:
+                        st.image(photo_url, caption="Photo", use_column_width=True)
+                    except Exception:
+                        st.warning("Photo URL exists but could not be displayed.")
+
+            with col_details:
+                st.markdown("### Details")
+                st.write(f"Make / Model: {item['make']} {item['model']}")
+                st.write(f"PN: {item.get('part_number') or '-'}")
+                st.write(f"SN: {item.get('serial_number') or '-'}")
+                st.write(f"Bin: {item.get('bin_location') or '-'}")
+                st.write(f"Notes: {item.get('notes') or '-'}")
+                st.write(f"Requested by: {item.get('requested_by') or '-'}")
+                st.write(f"Status: {item.get('request_status') or '-'}")
+
+                if st.button("Return to Stock (Unmark Sold)"):
+                    with eng.begin() as conn:
+                        conn.execute(
+                            text(
+                                """
+                                UPDATE items
+                                SET sold = FALSE,
+                                    request_status = NULL,
+                                    requested_by = NULL
+                                WHERE id = :id
+                                """
+                            ),
+                            {"id": item["id"]},
+                        )
+                    refresh_data()
+                    st.success("Item returned to stock.")
+                    st.rerun()
+
 
 elif page == "Export/Import":
     if role != "Admin":
