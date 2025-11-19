@@ -306,32 +306,23 @@ def create_single_label_pdf(item: dict) -> bytes:
 
 def save_photo_and_get_url(file):
     if file is None:
-        st.warning("DEBUG: No file provided to save_photo_and_get_url()")
         return None
-
     try:
         raw = file.read()
-        st.write("DEBUG: File read successfully, size:", len(raw))
-    except Exception as e:
-        st.error(f"DEBUG: Error reading uploaded file: {e}")
-        return None
-
-    # Try Supabase upload
-    try:
+        # Try Supabase first
         public_url = upload_image_and_get_url(raw, filename=f"{uuid.uuid4().hex}.jpg")
-        st.write("DEBUG: upload_image_and_get_url returned:", public_url)
-    except Exception as e:
-        st.error(f"DEBUG: upload_image_and_get_url threw an exception: {e}")
+        if public_url:
+            return public_url
+
+        # Fallback: local temp (non-persistent in Streamlit Cloud, but useful for local dev)
+        tmp_dir = "images"
+        os.makedirs(tmp_dir, exist_ok=True)
+        path = os.path.join(tmp_dir, f"{uuid.uuid4().hex}.jpg")
+        with open(path, "wb") as f:
+            f.write(raw)
+        return path
+    except Exception:
         return None
-
-    # If Supabase returned a valid URL
-    if public_url:
-        st.success("DEBUG: Supabase upload successful.")
-        return public_url
-
-    # If public_url is empty or None
-    st.warning("DEBUG: Supabase returned None or empty URL — upload failed.")
-    return None
 
 
 
