@@ -789,61 +789,60 @@ elif page == "Inventory List & Search":
                                     st.rerun()
 
             with mid:
-    st.subheader("Adjust / Delete")
-    ids2 = fdf["id"].tolist()
+                st.subheader("Adjust / Delete")
+                ids2 = fdf["id"].tolist()
 
-    if ids2:
-        sel2 = st.selectbox(
-            "Select Item to Adjust/Delete",
-            ids2,
-            key="sel2"
-        )
+                if ids2:
+                    sel2 = st.selectbox(
+                        "Select Item to Adjust/Delete",
+                        ids2,
+                        key="sel2"
+                    )
 
-        cur_qty = int(fdf.loc[fdf["id"] == sel2, "quantity"].iloc[0] or 0)
+                    cur_qty = int(fdf.loc[fdf["id"] == sel2, "quantity"].iloc[0] or 0)
 
-        new_qty2 = st.number_input(
-            "New Quantity",
-            min_value=0,
-            step=1,
-            value=cur_qty
-        )
+                    new_qty2 = st.number_input(
+                        "New Quantity",
+                        min_value=0,
+                        step=1,
+                        value=cur_qty
+                    )
 
-        if st.button("Update Quantity"):
-            update_quantity(sel2, int(new_qty2))
-            st.success("Quantity updated.")
+                    if st.button("Update Quantity"):
+                        update_quantity(sel2, int(new_qty2))
+                        st.success("Quantity updated.")
 
-        # --- Delete Item (Admin only) ---
-        if role == "Admin":
+                    # --- Delete Item (Admin only) ---
+                    if role == "Admin":
 
-            if "confirm_delete_sel2" not in st.session_state:
-                st.session_state.confirm_delete_sel2 = False
+                        if "confirm_delete_sel2" not in st.session_state:
+                            st.session_state.confirm_delete_sel2 = False
 
-            if st.button("Delete Item"):
-                st.session_state.confirm_delete_sel2 = True
+                        if st.button("Delete Item"):
+                            st.session_state.confirm_delete_sel2 = True
 
-            if st.session_state.confirm_delete_sel2:
-                st.warning(
-                    "Are you sure you want to delete this item? "
-                    "This cannot be undone."
-                )
+                        if st.session_state.confirm_delete_sel2:
+                            st.warning(
+                                "Are you sure you want to delete this item? "
+                                "This cannot be undone."
+                            )
 
-                colA, colB = st.columns(2)
+                            colA, colB = st.columns(2)
 
-                with colA:
-                    if st.button("Yes, delete", key="yes_delete_sel2"):
-                        delete_item(sel2)
-                        st.session_state.confirm_delete_sel2 = False
-                        st.success("Item deleted.")
-                        st.rerun()
+                            with colA:
+                                if st.button("Yes, delete", key="yes_delete_sel2"):
+                                    delete_item(sel2)
+                                    st.session_state.confirm_delete_sel2 = False
+                                    st.success("Item deleted.")
+                                    st.rerun()
 
-                with colB:
-                    if st.button("Cancel", key="cancel_delete_sel2"):
-                        st.session_state.confirm_delete_sel2 = False
-                        st.info("Delete canceled.")
+                            with colB:
+                                if st.button("Cancel", key="cancel_delete_sel2"):
+                                st.session_state.confirm_delete_sel2 = False
+                                st.info("Delete canceled.")
 
-        else:
-            st.caption("Only Admin can delete items.")
-
+                    else:
+                        st.caption("Only Admin can delete items.")
 
 
 
