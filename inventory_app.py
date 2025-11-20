@@ -510,7 +510,7 @@ if page == "Receive Inventory":
                     label="Print Label",
                     data=label_pdf,
                     file_name=f"label_{item['id']}.pdf",
-                    mime="application/pdf",
+                    mime="application/octet-stream",  # suggest 'download' instead of in-browser view
                     key=f"recv_label_{item['id']}",
                 )
             except Exception as e:
@@ -751,7 +751,7 @@ elif page == "Inventory List & Search":
                             label="Print Label for Selected Item",
                             data=label_pdf,
                             file_name=f"label_{row['id']}.pdf",
-                            mime="application/pdf",
+                            mime="application/octet-stream",
                             key=f"inv_label_{row['id']}",
                         )
                     except Exception as e:
