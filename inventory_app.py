@@ -32,7 +32,7 @@ st.markdown(
     /* Center main content and limit width for small screens */
     .block-container {
         max-width: 1000px;
-        padding-top: 0.5rem;
+        padding-top: 2.5rem;   /* was 0.5rem */
         padding-bottom: 2rem;
         margin-left: auto;
         margin-right: auto;
