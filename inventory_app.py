@@ -838,8 +838,8 @@ elif page == "Inventory List & Search":
 
                             with colB:
                                 if st.button("Cancel", key="cancel_delete_sel2"):
-                                st.session_state.confirm_delete_sel2 = False
-                                st.info("Delete canceled.")
+                                    st.session_state.confirm_delete_sel2 = False
+                                    st.info("Delete canceled.")
 
                     else:
                         st.caption("Only Admin can delete items.")
