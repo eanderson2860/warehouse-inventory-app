@@ -394,48 +394,109 @@ if page == "Receive Inventory":
     else:
         st.subheader("Receive Inventory")
 
+        # Keep track of "last added" item and prefill values
         if "just_added_item" not in st.session_state:
             st.session_state.just_added_item = None
+        if "receive_prefill" not in st.session_state:
+            st.session_state.receive_prefill = {}
+
+        # ---- DUPLICATE PREVIOUS PART BUTTON ----
+        if st.button("Duplicate Previous Part"):
+            prev = st.session_state.get("just_added_item")
+            if prev:
+                st.session_state.receive_prefill = {
+                    "make": prev.get("make") or "Continental",
+                    "model": prev.get("model") or "",
+                    "part_number": prev.get("part_number") or "",
+                    "serial_number": "",  # do NOT copy
+                    "quantity": int(prev.get("quantity", 1) or 1),
+                    "bin_location": prev.get("bin_location") or "",
+                    "category": prev.get("category") or "Crankshafts",
+                    "code_type": prev.get("code_type") or "Barcode (Code128)",
+                    "notes": "",  # do NOT copy
+                    "purchase_price": float(prev.get("purchase_price") or 0.0),
+                    "repair_cost": float(prev.get("repair_cost") or 0.0),
+                    "sale_price": float(prev.get("sale_price") or 0.0),
+                }
+                st.rerun()
+            else:
+                st.warning("No previous part to duplicate yet.")
+
+        prefill = st.session_state.get("receive_prefill", {})
 
         # ---------- FORM ----------
         with st.form("receive_form", clear_on_submit=True):
-            # Two columns on desktop, stacked on tablet
-            if tablet_mode:
-                cols = [st.container(), st.container()]
-            else:
-                cols = st.columns(2)
+            cols = st.columns(2)
+
+            # options reused in more than one widget
+            make_options = ["Continental", "Lycoming", "Franklin", "Other"]
+            category_options = [
+                "Crankshafts",
+                "Camshafts",
+                "Connecting Rods",
+                "Rocker Arms",
+                "Lifters",
+                "Gears",
+                "Counterweights",
+            ]
 
             with cols[0]:
-                make = st.text_input("Make *")
-                model = st.text_input("Model *")
-                part_number = st.text_input("Part Number (optional)")
-                serial_number = st.text_input("Serial Number (optional)")
-                quantity = st.number_input("Quantity", min_value=1, step=1, value=1)
+                # MAKE as dropdown
+                default_make = prefill.get("make", make_options[0])
+                make_index = (
+                    make_options.index(default_make)
+                    if default_make in make_options
+                    else 0
+                )
+                make = st.selectbox("Make *", make_options, index=make_index)
+
+                model = st.text_input(
+                    "Model *",
+                    value=prefill.get("model", ""),
+                )
+                part_number = st.text_input(
+                    "Part Number (optional)",
+                    value=prefill.get("part_number", ""),
+                )
+                serial_number = st.text_input(
+                    "Serial Number (optional)",
+                    value=prefill.get("serial_number", ""),
+                )
+                quantity = st.number_input(
+                    "Quantity",
+                    min_value=1,
+                    step=1,
+                    value=int(prefill.get("quantity", 1) or 1),
+                )
                 bin_location = st.text_input(
-                    "Bin Location *", placeholder="e.g., Aisle 1 / Bin B3"
+                    "Bin Location *",
+                    value=prefill.get("bin_location", ""),
+                    placeholder="e.g., Aisle 1 / Bin B3",
                 )
 
+                default_cat = prefill.get("category", category_options[0])
+                cat_index = (
+                    category_options.index(default_cat)
+                    if default_cat in category_options
+                    else 0
+                )
                 category = st.selectbox(
                     "Category *",
-                    [
-                        "Crankshafts",
-                        "Camshafts",
-                        "Connecting Rods",
-                        "Rocker Arms",
-                        "Lifters",
-                        "Gears",
-                        "Counterweights",
-                    ],
-                    index=None,
-                    placeholder="Select a category",
+                    category_options,
+                    index=cat_index,
                 )
 
             with cols[1]:
                 code_type = st.selectbox(
-                    "Code Type", ["Barcode (Code128)", "QR Code"], index=0
+                    "Code Type",
+                    ["Barcode (Code128)", "QR Code"],
+                    index=0 if prefill.get("code_type") != "QR Code" else 1,
                 )
                 photo = st.file_uploader("Photo (JPG/PNG)", type=["jpg", "jpeg", "png"])
-                notes = st.text_area("Notes (optional)")
+                notes = st.text_area(
+                    "Notes (optional)",
+                    value=prefill.get("notes", ""),
+                )
 
                 pcol1, pcol2, pcol3 = st.columns(3)
                 with pcol1:
@@ -444,7 +505,7 @@ if page == "Receive Inventory":
                         min_value=0.0,
                         step=0.01,
                         format="%.2f",
-                        value=0.0,
+                        value=float(prefill.get("purchase_price", 0.0)),
                     )
                 with pcol2:
                     repair_cost = st.number_input(
@@ -452,7 +513,7 @@ if page == "Receive Inventory":
                         min_value=0.0,
                         step=0.01,
                         format="%.2f",
-                        value=0.0,
+                        value=float(prefill.get("repair_cost", 0.0)),
                     )
                 with pcol3:
                     sale_price = st.number_input(
@@ -460,15 +521,15 @@ if page == "Receive Inventory":
                         min_value=0.0,
                         step=0.01,
                         format="%.2f",
-                        value=0.0,
+                        value=float(prefill.get("sale_price", 0.0)),
                     )
 
             submitted = st.form_submit_button("Add to Inventory")
 
         # ---------- HANDLE SUBMIT (outside form) ----------
         if submitted:
-            if not make or not model or not bin_location or category is None:
-                st.error("Make, Model, Bin Location, and Category are required.")
+            if not make or not model or not bin_location:
+                st.error("Make, Model, and Bin Location are required.")
                 st.session_state.just_added_item = None
             else:
                 item_id = str(uuid.uuid4())[:12]
@@ -495,22 +556,30 @@ if page == "Receive Inventory":
                     "created_at": datetime.utcnow().isoformat(timespec="seconds"),
                 }
                 insert_item(payload)
+
                 # stash it so we can show label + barcode on this rerun
                 st.session_state.just_added_item = payload
+
+                # also update prefill so the *next* part defaults to this one
+                st.session_state.receive_prefill = {
+                    **payload,
+                    "serial_number": "",
+                    "notes": "",
+                }
 
         # ---------- SHOW LABEL + BARCODE (outside form) ----------
         if st.session_state.just_added_item is not None:
             item = st.session_state.just_added_item
             st.success(f"Item added with ID: {item['id']}")
 
-            # Print label button
+            # Download label PDF
             try:
                 label_pdf = create_single_label_pdf(item)
                 st.download_button(
-                    label="Print Label",
+                    label="Download Label PDF",
                     data=label_pdf,
                     file_name=f"label_{item['id']}.pdf",
-                    mime="application/octet-stream",  # suggest 'download' instead of in-browser view
+                    mime="application/octet-stream",
                     key=f"recv_label_{item['id']}",
                 )
             except Exception as e:
@@ -529,6 +598,7 @@ if page == "Receive Inventory":
                 )
             except Exception:
                 pass
+
 
 elif page == "Inventory List & Search":
     if role not in ["Admin", "Sales"]:
