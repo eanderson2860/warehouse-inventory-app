@@ -647,6 +647,7 @@ elif page == "Inventory List & Search":
                                 "id",
                                 "bin_location",
                                 "notes",
+                                "category",
                             ]
                         ),
                         axis=1,
