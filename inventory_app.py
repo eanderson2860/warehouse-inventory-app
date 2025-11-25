@@ -623,7 +623,7 @@ elif page == "Inventory List & Search":
         df = get_active_df()
         filt_cols = st.columns(4)
         with filt_cols[0]:
-            q = st.text_input("Search (Make/Model/PN/SN/ID/BIN/Cat/Notes)")
+            q = st.text_input("Search All")
         with filt_cols[1]:
             make_f = st.text_input("Filter Make")
         with filt_cols[2]:
