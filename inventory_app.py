@@ -344,24 +344,48 @@ def create_single_label_pdf(item: dict) -> bytes:
 
 
 def save_photo_and_get_url(file):
+    """
+    Save an uploaded photo to Supabase storage and return a public URL.
+    If anything goes wrong, show a clear message and return None so the
+    item can still be saved without a photo.
+    """
     if file is None:
+        # No file selected at all
         return None
-    try:
-        raw = file.read()
-        # Try Supabase first
-        public_url = upload_image_and_get_url(raw, filename=f"{uuid.uuid4().hex}.jpg")
-        if public_url:
-            return public_url
 
-        # Fallback: local temp (non-persistent in Streamlit Cloud, but useful for local dev)
-        tmp_dir = "images"
-        os.makedirs(tmp_dir, exist_ok=True)
-        path = os.path.join(tmp_dir, f"{uuid.uuid4().hex}.jpg")
-        with open(path, "wb") as f:
-            f.write(raw)
-        return path
-    except Exception:
+    try:
+        # Read the file *once* into memory
+        raw = file.read()
+        if not raw:
+            st.warning(
+                "Photo file appears to be empty. "
+                "Please re-select the image and try again."
+            )
+            return None
+
+        # Try Supabase first
+        public_url = upload_image_and_get_url(
+            raw,
+            filename=f"{uuid.uuid4().hex}.jpg",
+        )
+
+        if not public_url:
+            # Cloud upload failed for some reason (network / rate limit / etc.)
+            st.warning(
+                "Photo upload failed (cloud storage error). "
+                "The part was saved, but the photo was not. "
+                "You can re-enter the part or contact admin to re-add the photo."
+            )
+            return None
+
+        # Success
+        return public_url
+
+    except Exception as e:
+        # Unexpected error: show it so you know something actually broke
+        st.error(f"Unexpected error while saving photo: {e}")
         return None
+
 
 
 # ----------------------------
